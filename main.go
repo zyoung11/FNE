@@ -313,6 +313,26 @@ func hex2Bytes(s string) ([]byte, error) {
 	return hex.DecodeString(s)
 }
 
+func buildExistingFileSet(dir string) map[string]struct{} {
+	set := make(map[string]struct{})
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return set
+	}
+
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(e.Name()))
+		if ext == ".mp3" || ext == ".flac" {
+			name := strings.TrimSuffix(e.Name(), ext)
+			set[name] = struct{}{}
+		}
+	}
+	return set
+}
+
 var (
 	user32             = syscall.NewLazyDLL("user32.dll")
 	ole32              = syscall.NewLazyDLL("ole32.dll")
@@ -543,16 +563,40 @@ func main() {
 		fmt.Printf("Read input folder error: %v\n", err)
 		os.Exit(1)
 	}
+
+	existing := buildExistingFileSet(outputFolder)
+
+	var ncmListOriginal []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.EqualFold(filepath.Ext(e.Name()), ".ncm") {
+			ncmListOriginal = append(ncmListOriginal, filepath.Join(inputFolder, e.Name()))
+		}
+	}
+	totalOriginal := len(ncmListOriginal)
+	if totalOriginal == 0 {
+		fmt.Println("No .ncm files found.")
+		os.Exit(0)
+	}
+
 	var ncmList []string
 	for _, e := range entries {
 		if !e.IsDir() && strings.EqualFold(filepath.Ext(e.Name()), ".ncm") {
+			baseName := strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
+			if _, found := existing[baseName]; found {
+				continue
+			}
 			ncmList = append(ncmList, filepath.Join(inputFolder, e.Name()))
 		}
 	}
 	total := len(ncmList)
-	if total == 0 {
+	if totalOriginal == 0 {
 		fmt.Println("No .ncm files found.")
 		os.Exit(0)
+	}
+
+	skipped := totalOriginal - len(ncmList)
+	if skipped > 0 {
+		fmt.Printf("Skipped %d already converted files.\n", skipped)
 	}
 
 	bar := progressbar.NewOptions(total,
