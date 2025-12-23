@@ -19,7 +19,7 @@
 
 ​	下载网址：https://www.gyan.dev/ffmpeg/builds/ffmpeg-git-full.7z
 
-2. 将`ffmpeg.exe`放入`./FuckNetEase`文件夹内，本地编译：
+2. 将`ffmpeg.exe`放入`./FNE`文件夹内，本地编译：
 
    ```bash
    go build .
