@@ -518,7 +518,7 @@ func (obj *IShellItem) Release() uint32 {
 }
 
 func main() {
-	inputFolder, err := SelectFolder("选择网易云音乐文件夹路径：xxx/CloudMusic/download/VipSongsDownload")
+	inputFolder, err := SelectFolder("选择VipSongsDownload路径，默认路径：C:/CloudMusic/VipSongsDownload")
 	if err != nil || inputFolder == "" {
 		fmt.Println("Input folder selection cancelled/error:", err)
 		os.Exit(0)
