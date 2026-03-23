@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/bogem/id3v2"
@@ -129,6 +130,32 @@ func parseArtist(raw json.RawMessage) string {
 	}
 
 	return "Unknown Artist"
+}
+
+func preserveCreationTime(src, dst string) {
+	info, err := os.Stat(src)
+	if err != nil {
+		return
+	}
+	winAttr, ok := info.Sys().(*syscall.Win32FileAttributeData)
+	if !ok {
+		return
+	}
+	creationTime := winAttr.CreationTime
+	h, err := syscall.CreateFile(
+		syscall.StringToUTF16Ptr(dst),
+		syscall.FILE_WRITE_ATTRIBUTES,
+		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE,
+		nil,
+		syscall.OPEN_EXISTING,
+		syscall.FILE_FLAG_BACKUP_SEMANTICS,
+		0,
+	)
+	if err != nil {
+		return
+	}
+	defer syscall.CloseHandle(h)
+	syscall.SetFileTime(h, &creationTime, nil, nil)
 }
 
 func buildVorbisCommentBlock(comments [][2]string) *flac.MetaDataBlock {
@@ -312,6 +339,7 @@ func convertNcmFile(inputPath, outputDir string) (format string, err error) {
 	if err := os.WriteFile(outputPath, audioData, 0644); err != nil {
 		return "", fmt.Errorf("write audio: %w", err)
 	}
+	preserveCreationTime(inputPath, outputPath)
 
 	if meta.Format == "mp3" {
 		if err := embedMP3(outputPath, &meta, artist, imageData); err != nil {
@@ -320,9 +348,7 @@ func convertNcmFile(inputPath, outputDir string) (format string, err error) {
 		}
 		return "mp3", nil
 	} else {
-		if err := embedFLAC(outputPath, &meta, artist, imageData); err != nil {
-			return "flac", nil
-		}
+		embedFLAC(outputPath, &meta, artist, imageData)
 		return "flac", nil
 	}
 }
@@ -479,7 +505,7 @@ func main() {
 	speed := float64(total) / elapsed.Seconds()
 
 	fmt.Println()
-	fmt.Println("========================================")
+	fmt.Println("============================================================")
 	fmt.Printf("  Input:     %s\n", inputFolder)
 	fmt.Printf("  Output:    %s\n", outputFolder)
 	fmt.Printf("  Total:     %d\n", total)
@@ -488,13 +514,13 @@ func main() {
 	fmt.Printf("  Skipped:   %d\n", skipped)
 	fmt.Printf("  Time:      %.1fs (%.1f files/s)\n", elapsed.Seconds(), speed)
 	if len(failedFiles) > 0 {
-		fmt.Println("----------------------------------------")
+		fmt.Println("------------------------------------------------------------")
 		fmt.Println("  Failed files:")
 		for _, f := range failedFiles {
 			fmt.Printf("    - %s\n", f)
 		}
 	}
-	fmt.Println("========================================")
+	fmt.Println("============================================================")
 	fmt.Println()
 	fmt.Print("Press Enter to exit...")
 	bufio.NewReader(os.Stdin).ReadBytes('\n')
