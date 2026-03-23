@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
@@ -201,31 +202,31 @@ func embedMP3(path string, meta *ncmMetadata, artist string, imageData []byte) e
 	return tag.Save()
 }
 
-func convertNcmFile(inputPath, outputDir string) error {
+func convertNcmFile(inputPath, outputDir string) (format string, err error) {
 	file, err := os.Open(inputPath)
 	if err != nil {
-		return fmt.Errorf("open: %w", err)
+		return "", fmt.Errorf("open: %w", err)
 	}
 	defer file.Close()
 
 	header := make([]byte, 8)
 	if _, err := io.ReadFull(file, header); err != nil {
-		return fmt.Errorf("read header: %w", err)
+		return "", fmt.Errorf("read header: %w", err)
 	}
 	if string(header) != "CTENFDAM" {
-		return errors.New("invalid ncm header")
+		return "", errors.New("invalid ncm header")
 	}
 	if _, err := file.Seek(2, io.SeekCurrent); err != nil {
-		return fmt.Errorf("seek: %w", err)
+		return "", fmt.Errorf("seek: %w", err)
 	}
 
 	var keyLength uint32
 	if err := binary.Read(file, binary.LittleEndian, &keyLength); err != nil {
-		return fmt.Errorf("read key length: %w", err)
+		return "", fmt.Errorf("read key length: %w", err)
 	}
 	keyDataEnc := make([]byte, keyLength)
 	if _, err := io.ReadFull(file, keyDataEnc); err != nil {
-		return fmt.Errorf("read key data: %w", err)
+		return "", fmt.Errorf("read key data: %w", err)
 	}
 	for i := range keyDataEnc {
 		keyDataEnc[i] ^= 0x64
@@ -250,18 +251,18 @@ func convertNcmFile(inputPath, outputDir string) error {
 
 	var metaLength uint32
 	if err := binary.Read(file, binary.LittleEndian, &metaLength); err != nil {
-		return fmt.Errorf("read meta length: %w", err)
+		return "", fmt.Errorf("read meta length: %w", err)
 	}
 	metaDataEnc := make([]byte, metaLength)
 	if _, err := io.ReadFull(file, metaDataEnc); err != nil {
-		return fmt.Errorf("read meta data: %w", err)
+		return "", fmt.Errorf("read meta data: %w", err)
 	}
 	for i := range metaDataEnc {
 		metaDataEnc[i] ^= 0x63
 	}
 	metaDataB64, err := base64.StdEncoding.DecodeString(string(metaDataEnc[22:]))
 	if err != nil {
-		return fmt.Errorf("base64 decode: %w", err)
+		return "", fmt.Errorf("base64 decode: %w", err)
 	}
 	block = newAESCipher(metaKey)
 	ecbDec = newECB(block)
@@ -271,19 +272,19 @@ func convertNcmFile(inputPath, outputDir string) error {
 
 	var meta ncmMetadata
 	if err := json.Unmarshal(metaDataJson, &meta); err != nil {
-		return fmt.Errorf("unmarshal metadata: %w", err)
+		return "", fmt.Errorf("unmarshal metadata: %w", err)
 	}
 	if _, err := file.Seek(9, io.SeekCurrent); err != nil {
-		return fmt.Errorf("seek to image: %w", err)
+		return "", fmt.Errorf("seek to image: %w", err)
 	}
 
 	var imageSize uint32
 	if err := binary.Read(file, binary.LittleEndian, &imageSize); err != nil {
-		return fmt.Errorf("read image size: %w", err)
+		return "", fmt.Errorf("read image size: %w", err)
 	}
 	imageData := make([]byte, imageSize)
 	if _, err := io.ReadFull(file, imageData); err != nil {
-		return fmt.Errorf("read image data: %w", err)
+		return "", fmt.Errorf("read image data: %w", err)
 	}
 
 	chunk := make([]byte, 0x8000)
@@ -294,7 +295,7 @@ func convertNcmFile(inputPath, outputDir string) error {
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("read audio: %w", err)
+			return "", fmt.Errorf("read audio: %w", err)
 		}
 		for i := 0; i < n; i++ {
 			j := byte(i + 1)
@@ -309,20 +310,21 @@ func convertNcmFile(inputPath, outputDir string) error {
 	outputPath := filepath.Join(outputDir, baseName+"."+meta.Format)
 
 	if err := os.WriteFile(outputPath, audioData, 0644); err != nil {
-		return fmt.Errorf("write audio: %w", err)
+		return "", fmt.Errorf("write audio: %w", err)
 	}
 
 	if meta.Format == "mp3" {
 		if err := embedMP3(outputPath, &meta, artist, imageData); err != nil {
 			os.Remove(outputPath)
-			return fmt.Errorf("embed mp3 metadata: %w", err)
+			return "", fmt.Errorf("embed mp3 metadata: %w", err)
 		}
+		return "mp3", nil
 	} else {
 		if err := embedFLAC(outputPath, &meta, artist, imageData); err != nil {
+			return "flac", nil
 		}
+		return "flac", nil
 	}
-
-	return nil
 }
 
 func cleanupBadFiles(dir string) {
@@ -417,6 +419,8 @@ func main() {
 		progressbar.OptionShowBytes(false),
 		progressbar.OptionSetWidth(50),
 		progressbar.OptionSetDescription("Converting..."),
+		progressbar.OptionSetPredictTime(true),
+		progressbar.OptionFullWidth(),
 		progressbar.OptionSetTheme(progressbar.Theme{
 			Saucer:        "[green]█[reset]",
 			SaucerHead:    "[green]>[reset]",
@@ -427,30 +431,37 @@ func main() {
 		progressbar.OptionOnCompletion(func() { fmt.Println() }),
 	)
 
-	success, failed := 0, 0
+	var (
+		success, flacCount, mp3Count int
+		failedFiles                  []string
+		mu                           sync.Mutex
+	)
+
 	start := time.Now()
 	const workerCount = 8
 
 	jobs := make(chan string, total)
 	var wg sync.WaitGroup
-	var mu sync.Mutex
 
 	for w := 0; w < workerCount; w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for path := range jobs {
-				err := convertNcmFile(path, outputFolder)
+				format, err := convertNcmFile(path, outputFolder)
 				mu.Lock()
 				if err != nil {
-					failed++
+					failedFiles = append(failedFiles, filepath.Base(path))
 				} else {
 					success++
+					switch format {
+					case "flac":
+						flacCount++
+					case "mp3":
+						mp3Count++
+					}
 				}
 				mu.Unlock()
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "[FAIL] %s : %v\n", filepath.Base(path), err)
-				}
 				bar.Add(1)
 			}
 		}()
@@ -465,5 +476,26 @@ func main() {
 	cleanupBadFiles(outputFolder)
 
 	elapsed := time.Since(start)
-	fmt.Printf("Done!  Success: %d , Failed: %d , Time: %.1fs\n", success, failed, elapsed.Seconds())
+	speed := float64(total) / elapsed.Seconds()
+
+	fmt.Println()
+	fmt.Println("========================================")
+	fmt.Printf("  Input:     %s\n", inputFolder)
+	fmt.Printf("  Output:    %s\n", outputFolder)
+	fmt.Printf("  Total:     %d\n", total)
+	fmt.Printf("  Success:   %d (FLAC: %d, MP3: %d)\n", success, flacCount, mp3Count)
+	fmt.Printf("  Failed:    %d\n", len(failedFiles))
+	fmt.Printf("  Skipped:   %d\n", skipped)
+	fmt.Printf("  Time:      %.1fs (%.1f files/s)\n", elapsed.Seconds(), speed)
+	if len(failedFiles) > 0 {
+		fmt.Println("----------------------------------------")
+		fmt.Println("  Failed files:")
+		for _, f := range failedFiles {
+			fmt.Printf("    - %s\n", f)
+		}
+	}
+	fmt.Println("========================================")
+	fmt.Println()
+	fmt.Print("Press Enter to exit...")
+	bufio.NewReader(os.Stdin).ReadBytes('\n')
 }
