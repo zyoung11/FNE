@@ -425,16 +425,7 @@ func main() {
 		}
 	}
 
-	if len(ncmListOriginal) == 0 {
-		fmt.Println("No .ncm files found.")
-		os.Exit(0)
-	}
 	total := len(ncmList)
-	if total == 0 {
-		fmt.Println("All files already converted.")
-		os.Exit(0)
-	}
-
 	skipped := len(ncmListOriginal) - total
 	if skipped > 0 {
 		fmt.Printf("Skipped %d already converted files.\n", skipped)
