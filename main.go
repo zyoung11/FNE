@@ -145,18 +145,6 @@ func buildVorbisCommentBlock(comments [][2]string) *flac.MetaDataBlock {
 	}
 }
 
-func embedMetadata(path string, meta *ncmMetadata, artist string, imageData []byte) error {
-	ext := strings.ToLower(filepath.Ext(path))
-	switch ext {
-	case ".flac":
-		return embedFLAC(path, meta, artist, imageData)
-	case ".mp3":
-		return embedMP3(path, meta, artist, imageData)
-	default:
-		return fmt.Errorf("unsupported format: %s", ext)
-	}
-}
-
 func embedFLAC(path string, meta *ncmMetadata, artist string, imageData []byte) error {
 	f, err := flac.ParseFile(path)
 	if err != nil {
@@ -317,25 +305,39 @@ func convertNcmFile(inputPath, outputDir string) error {
 
 	baseName := strings.TrimSuffix(filepath.Base(inputPath), filepath.Ext(inputPath))
 	artist := parseArtist(meta.Artist)
+	audioData := audioBuf.Bytes()
 	outputPath := filepath.Join(outputDir, baseName+"."+meta.Format)
 
-	if err := os.WriteFile(outputPath, audioBuf.Bytes(), 0644); err != nil {
+	if err := os.WriteFile(outputPath, audioData, 0644); err != nil {
 		return fmt.Errorf("write audio: %w", err)
 	}
 
-	if err := embedMetadata(outputPath, &meta, artist, imageData); err != nil {
-		fallbackPath := filepath.Join(outputDir, baseName+".mp3")
-		if err := os.WriteFile(fallbackPath, audioBuf.Bytes(), 0644); err != nil {
-			return fmt.Errorf("write fallback: %w", err)
-		}
-		if err2 := embedMP3(fallbackPath, &meta, artist, imageData); err2 != nil {
+	if meta.Format == "mp3" {
+		if err := embedMP3(outputPath, &meta, artist, imageData); err != nil {
 			os.Remove(outputPath)
-			return nil
+			return fmt.Errorf("embed mp3 metadata: %w", err)
 		}
-		os.Remove(outputPath)
+	} else {
+		if err := embedFLAC(outputPath, &meta, artist, imageData); err != nil {
+		}
 	}
 
 	return nil
+}
+
+func cleanupBadFiles(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if strings.HasSuffix(strings.ToLower(e.Name()), ".mp3-id3v2") {
+			os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
 }
 
 func buildExistingFileSet(dir string) map[string]struct{} {
@@ -459,6 +461,8 @@ func main() {
 	}
 	close(jobs)
 	wg.Wait()
+
+	cleanupBadFiles(outputFolder)
 
 	elapsed := time.Since(start)
 	fmt.Printf("Done!  Success: %d , Failed: %d , Time: %.1fs\n", success, failed, elapsed.Seconds())
