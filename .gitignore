@@ -31,3 +31,5 @@ go.work.sum
 # .idea/
 # .vscode/
 FNE_with_FFmpeg.exe
+TEST
+FNE.exe

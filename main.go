@@ -9,15 +9,14 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"sync"
-
-	// "log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -41,25 +40,7 @@ type ecb struct {
 }
 
 func newECB(b cipher.Block) *ecb {
-	return &ecb{
-		b:         b,
-		blockSize: b.BlockSize(),
-	}
-}
-
-func extractFFmpeg() (string, error) {
-	tmp, err := os.CreateTemp("", "ffmpeg-*.exe")
-	if err != nil {
-		return "", err
-	}
-	if _, err := tmp.Write(ffmpegExe); err != nil {
-		tmp.Close()
-		return "", err
-	}
-	if err := tmp.Close(); err != nil {
-		return "", err
-	}
-	return tmp.Name(), nil
+	return &ecb{b: b, blockSize: b.BlockSize()}
 }
 
 func (x *ecb) Decrypt(dst, src []byte) {
@@ -88,7 +69,27 @@ func unpad(src []byte) []byte {
 	return src[:length-unpadding]
 }
 
+func mustHex(s string) []byte {
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		panic("invalid hex constant: " + s)
+	}
+	return b
+}
+
+func newAESCipher(key []byte) cipher.Block {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		panic("aes.NewCipher failed: " + err.Error())
+	}
+	return block
+}
+
 func parseArtist(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return "Unknown Artist"
+	}
+
 	var nested [][]string
 	if err := json.Unmarshal(raw, &nested); err == nil {
 		var names []string
@@ -127,42 +128,59 @@ func parseArtist(raw json.RawMessage) string {
 	return "Unknown Artist"
 }
 
-func convertNcmFile(inputPath, outputDir string) error {
-	// log.Printf("Processing: %s", filepath.Base(inputPath))
+func extractFFmpeg() (string, error) {
+	tmp, err := os.CreateTemp("", "ffmpeg-*.exe")
+	if err != nil {
+		return "", err
+	}
+	if _, err := tmp.Write(ffmpegExe); err != nil {
+		tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	return tmp.Name(), nil
+}
 
+var (
+	coreKey = mustHex("687A4852416D736F356B496E62617857")
+	metaKey = mustHex("2331346C6A6B5F215C5D2630553C2728")
+)
+
+func convertNcmFile(inputPath, outputDir string) error {
 	file, err := os.Open(inputPath)
 	if err != nil {
-		return fmt.Errorf("failed to open ncm file: %w", err)
+		return fmt.Errorf("open ncm file: %w", err)
 	}
 	defer file.Close()
 
 	header := make([]byte, 8)
 	if _, err := io.ReadFull(file, header); err != nil {
-		return fmt.Errorf("failed to read header: %w", err)
+		return fmt.Errorf("read header: %w", err)
 	}
 	if string(header) != "CTENFDAM" {
-		return fmt.Errorf("invalid ncm file header")
+		return errors.New("invalid ncm file header")
 	}
 	if _, err := file.Seek(2, io.SeekCurrent); err != nil {
-		return fmt.Errorf("failed to seek: %w", err)
+		return fmt.Errorf("seek: %w", err)
 	}
 
-	coreKey, _ := hex2Bytes("687A4852416D736F356B496E62617857")
 	var keyLength uint32
 	if err := binary.Read(file, binary.LittleEndian, &keyLength); err != nil {
-		return fmt.Errorf("failed to read key length: %w", err)
+		return fmt.Errorf("read key length: %w", err)
 	}
 	keyDataEnc := make([]byte, keyLength)
 	if _, err := io.ReadFull(file, keyDataEnc); err != nil {
-		return fmt.Errorf("failed to read key data: %w", err)
+		return fmt.Errorf("read key data: %w", err)
 	}
 	for i := range keyDataEnc {
 		keyDataEnc[i] ^= 0x64
 	}
-	block, _ := aes.NewCipher(coreKey)
-	ecbDecrypter := newECB(block)
+	block := newAESCipher(coreKey)
+	ecbDec := newECB(block)
 	keyDataPadded := make([]byte, len(keyDataEnc))
-	ecbDecrypter.Decrypt(keyDataPadded, keyDataEnc)
+	ecbDec.Decrypt(keyDataPadded, keyDataEnc)
 	keyData := unpad(keyDataPadded)[17:]
 
 	keyBox := make([]byte, 256)
@@ -177,68 +195,67 @@ func convertNcmFile(inputPath, outputDir string) error {
 		lastByte = c
 	}
 
-	metaKey, _ := hex2Bytes("2331346C6A6B5F215C5D2630553C2728")
 	var metaLength uint32
 	if err := binary.Read(file, binary.LittleEndian, &metaLength); err != nil {
-		return fmt.Errorf("failed to read meta length: %w", err)
+		return fmt.Errorf("read meta length: %w", err)
 	}
 	metaDataEnc := make([]byte, metaLength)
 	if _, err := io.ReadFull(file, metaDataEnc); err != nil {
-		return fmt.Errorf("failed to read meta data: %w", err)
+		return fmt.Errorf("read meta data: %w", err)
 	}
 	for i := range metaDataEnc {
 		metaDataEnc[i] ^= 0x63
 	}
 	metaDataB64, err := base64.StdEncoding.DecodeString(string(metaDataEnc[22:]))
 	if err != nil {
-		return fmt.Errorf("failed to base64 decode metadata: %w", err)
+		return fmt.Errorf("base64 decode metadata: %w", err)
 	}
-	block, _ = aes.NewCipher(metaKey)
-	ecbDecrypter = newECB(block)
+	block = newAESCipher(metaKey)
+	ecbDec = newECB(block)
 	metaDataPadded := make([]byte, len(metaDataB64))
-	ecbDecrypter.Decrypt(metaDataPadded, metaDataB64)
+	ecbDec.Decrypt(metaDataPadded, metaDataB64)
 	metaDataJson := unpad(metaDataPadded)[6:]
 
 	var meta ncmMetadata
 	if err := json.Unmarshal(metaDataJson, &meta); err != nil {
-		return fmt.Errorf("failed to unmarshal metadata json: %w", err)
+		return fmt.Errorf("unmarshal metadata: %w", err)
 	}
 	if _, err := file.Seek(9, io.SeekCurrent); err != nil {
-		return fmt.Errorf("failed to seek to image: %w", err)
+		return fmt.Errorf("seek to image: %w", err)
 	}
 
 	var imageSize uint32
 	if err := binary.Read(file, binary.LittleEndian, &imageSize); err != nil {
-		return fmt.Errorf("failed to read image size: %w", err)
+		return fmt.Errorf("read image size: %w", err)
 	}
 	imageData := make([]byte, imageSize)
 	if _, err := io.ReadFull(file, imageData); err != nil {
-		return fmt.Errorf("failed to read image data: %w", err)
+		return fmt.Errorf("read image data: %w", err)
 	}
 
 	tempAudio, err := os.CreateTemp("", fmt.Sprintf("ncm-audio-*.%s", strings.ToLower(meta.Format)))
 	if err != nil {
-		return fmt.Errorf("failed to create temp audio file: %w", err)
+		return fmt.Errorf("create temp audio: %w", err)
 	}
 	defer os.Remove(tempAudio.Name())
-	defer tempAudio.Close()
 
 	hasValidImage := len(imageData) > 0 &&
 		(bytes.HasPrefix(imageData, []byte{0xFF, 0xD8}) ||
 			bytes.HasPrefix(imageData, []byte{0x89, 0x50}))
 
-	var tempImage *os.File
+	var tempImagePath string
 	if hasValidImage {
-		tempImage, err = os.CreateTemp("", "ncm-cover-*.jpg")
+		tmpImg, err := os.CreateTemp("", "ncm-cover-*.jpg")
 		if err != nil {
 			return fmt.Errorf("create temp image: %w", err)
 		}
-		defer os.Remove(tempImage.Name())
-		defer tempImage.Close()
-		if _, err := tempImage.Write(imageData); err != nil {
+		if _, err := tmpImg.Write(imageData); err != nil {
+			tmpImg.Close()
 			return fmt.Errorf("write temp image: %w", err)
 		}
-		tempImage.Close()
+		tmpImg.Close()
+		tempImagePath = tmpImg.Name()
+		defer os.Remove(tempImagePath)
 	}
 
 	chunk := make([]byte, 0x8000)
@@ -248,24 +265,20 @@ func convertNcmFile(inputPath, outputDir string) error {
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("failed to read audio chunk: %w", err)
+			return fmt.Errorf("read audio chunk: %w", err)
 		}
-
 		for i := 0; i < n; i++ {
 			j := byte(i + 1)
 			chunk[i] ^= keyBox[(keyBox[j]+keyBox[(keyBox[j]+j)&0xff])&0xff]
 		}
-
 		if _, err := tempAudio.Write(chunk[:n]); err != nil {
-			return fmt.Errorf("failed to write decrypted audio chunk: %w", err)
+			return fmt.Errorf("write audio chunk: %w", err)
 		}
 	}
-
 	tempAudio.Close()
 
 	baseName := strings.TrimSuffix(filepath.Base(inputPath), filepath.Ext(inputPath))
 	outputPath := filepath.Join(outputDir, baseName+"."+meta.Format)
-
 	artistsStr := parseArtist(meta.Artist)
 
 	var args []string
@@ -273,7 +286,7 @@ func convertNcmFile(inputPath, outputDir string) error {
 		args = []string{
 			"-y",
 			"-i", tempAudio.Name(),
-			"-i", tempImage.Name(),
+			"-i", tempImagePath,
 			"-map", "0:a", "-map", "1:v",
 			"-c", "copy",
 			"-disposition:v", "attached_pic",
@@ -294,7 +307,6 @@ func convertNcmFile(inputPath, outputDir string) error {
 		}
 	}
 
-	// log.Printf("Executing FFmpeg: %s %v", "ffmpeg", args)
 	ffmpegPath, err := extractFFmpeg()
 	if err != nil {
 		return fmt.Errorf("extract ffmpeg: %w", err)
@@ -305,12 +317,7 @@ func convertNcmFile(inputPath, outputDir string) error {
 		return fmt.Errorf("ffmpeg failed: %w\n%s", err, string(output))
 	}
 
-	// log.Printf("Successfully converted and tagged: %s", filepath.Base(outputPath))
 	return nil
-}
-
-func hex2Bytes(s string) ([]byte, error) {
-	return hex.DecodeString(s)
 }
 
 func buildExistingFileSet(dir string) map[string]struct{} {
@@ -319,7 +326,6 @@ func buildExistingFileSet(dir string) map[string]struct{} {
 	if err != nil {
 		return set
 	}
-
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -333,6 +339,8 @@ func buildExistingFileSet(dir string) map[string]struct{} {
 	return set
 }
 
+// --- Windows COM API for folder selection ---
+
 var (
 	user32             = syscall.NewLazyDLL("user32.dll")
 	ole32              = syscall.NewLazyDLL("ole32.dll")
@@ -343,18 +351,17 @@ var (
 	coTaskMemFree      = ole32.NewProc("CoTaskMemFree")
 )
 
-var (
-	CLSID_FileOpenDialog = GUID{0xDC1C5A9C, 0xE88A, 0x4DDE, [8]byte{0xA5, 0xA1, 0x60, 0xF8, 0x2A, 0x20, 0xAE, 0xF7}}
-	IID_IFileDialog      = GUID{0x42F85136, 0xDB7E, 0x439C, [8]byte{0x85, 0xF1, 0xE4, 0x07, 0x5D, 0x13, 0x5F, 0xC8}}
-	IID_IShellItem       = GUID{0x43826D1E, 0xE718, 0x42EE, [8]byte{0x85, 0x65, 0x73, 0x74, 0x71, 0x6C, 0x45, 0x52}}
-)
-
 type GUID struct {
 	Data1 uint32
 	Data2 uint16
 	Data3 uint16
 	Data4 [8]byte
 }
+
+var (
+	CLSID_FileOpenDialog = GUID{0xDC1C5A9C, 0xE88A, 0x4DDE, [8]byte{0xA5, 0xA1, 0x60, 0xF8, 0x2A, 0x20, 0xAE, 0xF7}}
+	IID_IFileDialog      = GUID{0x42F85136, 0xDB7E, 0x439C, [8]byte{0x85, 0xF1, 0xE4, 0x07, 0x5D, 0x13, 0x5F, 0xC8}}
+)
 
 type IFileDialogVtbl struct {
 	QueryInterface      uintptr
@@ -386,9 +393,7 @@ type IFileDialogVtbl struct {
 	SetFilter           uintptr
 }
 
-type IFileDialog struct {
-	lpVtbl *IFileDialogVtbl
-}
+type IFileDialog struct{ lpVtbl *IFileDialogVtbl }
 
 type IShellItemVtbl struct {
 	QueryInterface uintptr
@@ -401,9 +406,7 @@ type IShellItemVtbl struct {
 	Compare        uintptr
 }
 
-type IShellItem struct {
-	lpVtbl *IShellItemVtbl
-}
+type IShellItem struct{ lpVtbl *IShellItemVtbl }
 
 const (
 	FOS_PICKFOLDERS          = 0x00000020
@@ -411,144 +414,120 @@ const (
 	SIGDN_FILESYSPATH        = 0x80028000
 )
 
-func init() {
-	setProcessDPIAware.Call()
-}
+func init() { setProcessDPIAware.Call() }
 
-func UTF16PtrToString(p *uint16) string {
+func utf16PtrToString(p *uint16) string {
 	if p == nil {
 		return ""
 	}
-
 	end := unsafe.Pointer(p)
 	n := 0
 	for *(*uint16)(end) != 0 {
 		end = unsafe.Pointer(uintptr(end) + unsafe.Sizeof(*p))
 		n++
 	}
-
 	s := make([]uint16, n)
 	ptr := unsafe.Pointer(p)
 	for i := 0; i < n; i++ {
 		s[i] = *(*uint16)(ptr)
 		ptr = unsafe.Pointer(uintptr(ptr) + unsafe.Sizeof(*p))
 	}
-
 	return syscall.UTF16ToString(s)
 }
 
-func CoTaskMemFree(p unsafe.Pointer) {
-	syscall.SyscallN(coTaskMemFree.Addr(), uintptr(p))
+func (obj *IFileDialog) Release() uint32 {
+	ret, _, _ := syscall.SyscallN(obj.lpVtbl.Release, uintptr(unsafe.Pointer(obj)))
+	return uint32(ret)
 }
 
-func FAILED(hr uintptr) bool {
-	return int32(hr) < 0
+func (obj *IShellItem) Release() uint32 {
+	ret, _, _ := syscall.SyscallN(obj.lpVtbl.Release, uintptr(unsafe.Pointer(obj)))
+	return uint32(ret)
 }
 
-func SelectFolder(title string) (string, error) {
+func selectFolder(title string) (string, error) {
 	hr, _, _ := syscall.SyscallN(coInitializeEx.Addr(), 0, COINIT_APARTMENTTHREADED)
-	if FAILED(hr) {
-		return "", fmt.Errorf("COM initialization failed")
+	if int32(hr) < 0 {
+		return "", errors.New("COM initialization failed")
 	}
 	defer syscall.SyscallN(coUninitialize.Addr())
 
-	var pFileDialog *IFileDialog
+	var pDialog *IFileDialog
 	hr, _, _ = syscall.SyscallN(
 		coCreateInstance.Addr(),
-		uintptr(unsafe.Pointer(&CLSID_FileOpenDialog)),
-		0,
-		uintptr(1),
+		uintptr(unsafe.Pointer(&CLSID_FileOpenDialog)), 0, 1,
 		uintptr(unsafe.Pointer(&IID_IFileDialog)),
-		uintptr(unsafe.Pointer(&pFileDialog)),
+		uintptr(unsafe.Pointer(&pDialog)),
 	)
-	if FAILED(hr) {
-		return "", fmt.Errorf("failed to create FileOpenDialog")
+	if int32(hr) < 0 {
+		return "", errors.New("create FileOpenDialog failed")
 	}
-	defer pFileDialog.Release()
+	defer pDialog.Release()
 
 	hr, _, _ = syscall.SyscallN(
-		pFileDialog.lpVtbl.SetOptions,
-		uintptr(unsafe.Pointer(pFileDialog)),
-		FOS_PICKFOLDERS,
+		pDialog.lpVtbl.SetOptions,
+		uintptr(unsafe.Pointer(pDialog)), FOS_PICKFOLDERS,
 	)
-	if FAILED(hr) {
-		return "", fmt.Errorf("failed to set options")
+	if int32(hr) < 0 {
+		return "", errors.New("set options failed")
 	}
 
 	titlePtr, err := syscall.UTF16PtrFromString(title)
 	if err != nil {
-		return "", fmt.Errorf("failed to convert title:%v", err)
+		return "", fmt.Errorf("convert title: %w", err)
 	}
-
 	hr, _, _ = syscall.SyscallN(
-		pFileDialog.lpVtbl.SetTitle,
-		uintptr(unsafe.Pointer(pFileDialog)),
+		pDialog.lpVtbl.SetTitle,
+		uintptr(unsafe.Pointer(pDialog)),
 		uintptr(unsafe.Pointer(titlePtr)),
 	)
-	if FAILED(hr) {
-		return "", fmt.Errorf("failed to set title")
+	if int32(hr) < 0 {
+		return "", errors.New("set title failed")
 	}
 
 	hr, _, _ = syscall.SyscallN(
-		pFileDialog.lpVtbl.Show,
-		uintptr(unsafe.Pointer(pFileDialog)),
-		0,
+		pDialog.lpVtbl.Show, uintptr(unsafe.Pointer(pDialog)), 0,
 	)
-	if FAILED(hr) {
-		return "", fmt.Errorf("user deselected")
+	if int32(hr) < 0 {
+		return "", errors.New("user cancelled")
 	}
 
 	var pItem *IShellItem
 	hr, _, _ = syscall.SyscallN(
-		pFileDialog.lpVtbl.GetResult,
-		uintptr(unsafe.Pointer(pFileDialog)),
+		pDialog.lpVtbl.GetResult,
+		uintptr(unsafe.Pointer(pDialog)),
 		uintptr(unsafe.Pointer(&pItem)),
 	)
-	if FAILED(hr) {
-		return "", fmt.Errorf("failed to retrieve results")
+	if int32(hr) < 0 {
+		return "", errors.New("get result failed")
 	}
 	defer pItem.Release()
 
 	var pszPath *uint16
 	hr, _, _ = syscall.SyscallN(
 		pItem.lpVtbl.GetDisplayName,
-		uintptr(unsafe.Pointer(pItem)),
-		SIGDN_FILESYSPATH,
+		uintptr(unsafe.Pointer(pItem)), SIGDN_FILESYSPATH,
 		uintptr(unsafe.Pointer(&pszPath)),
 	)
-	if FAILED(hr) {
-		return "", fmt.Errorf("failed to retrieve the path")
+	if int32(hr) < 0 {
+		return "", errors.New("get display name failed")
 	}
-	defer CoTaskMemFree(unsafe.Pointer(pszPath))
+	defer syscall.SyscallN(coTaskMemFree.Addr(), uintptr(unsafe.Pointer(pszPath)))
 
-	return UTF16PtrToString(pszPath), nil
+	return utf16PtrToString(pszPath), nil
 }
 
-func (obj *IFileDialog) Release() uint32 {
-	ret, _, _ := syscall.SyscallN(
-		obj.lpVtbl.Release,
-		uintptr(unsafe.Pointer(obj)),
-	)
-	return uint32(ret)
-}
-
-func (obj *IShellItem) Release() uint32 {
-	ret, _, _ := syscall.SyscallN(
-		obj.lpVtbl.Release,
-		uintptr(unsafe.Pointer(obj)),
-	)
-	return uint32(ret)
-}
+// --- Main ---
 
 func main() {
-	inputFolder, err := SelectFolder("选择VipSongsDownload路径，默认路径：C:/CloudMusic/VipSongsDownload")
+	inputFolder, err := selectFolder("选择VipSongsDownload路径，默认路径：C:/CloudMusic/VipSongsDownload")
 	if err != nil || inputFolder == "" {
-		fmt.Println("Input folder selection cancelled/error:", err)
+		fmt.Println("Input folder selection cancelled:", err)
 		os.Exit(0)
 	}
-	outputFolder, err := SelectFolder("选择保存文件夹路径")
+	outputFolder, err := selectFolder("选择保存文件夹路径")
 	if err != nil || outputFolder == "" {
-		fmt.Println("Output folder selection cancelled/error:", err)
+		fmt.Println("Output folder selection cancelled:", err)
 		os.Exit(0)
 	}
 
@@ -566,35 +545,29 @@ func main() {
 
 	existing := buildExistingFileSet(outputFolder)
 
-	var ncmListOriginal []string
+	var ncmListOriginal, ncmList []string
 	for _, e := range entries {
-		if !e.IsDir() && strings.EqualFold(filepath.Ext(e.Name()), ".ncm") {
-			ncmListOriginal = append(ncmListOriginal, filepath.Join(inputFolder, e.Name()))
+		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".ncm") {
+			continue
 		}
-	}
-	totalOriginal := len(ncmListOriginal)
-	if totalOriginal == 0 {
-		fmt.Println("No .ncm files found.")
-		os.Exit(0)
-	}
-
-	var ncmList []string
-	for _, e := range entries {
-		if !e.IsDir() && strings.EqualFold(filepath.Ext(e.Name()), ".ncm") {
-			baseName := strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
-			if _, found := existing[baseName]; found {
-				continue
-			}
+		ncmListOriginal = append(ncmListOriginal, filepath.Join(inputFolder, e.Name()))
+		baseName := strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
+		if _, found := existing[baseName]; !found {
 			ncmList = append(ncmList, filepath.Join(inputFolder, e.Name()))
 		}
 	}
-	total := len(ncmList)
-	if totalOriginal == 0 {
+
+	if len(ncmListOriginal) == 0 {
 		fmt.Println("No .ncm files found.")
 		os.Exit(0)
 	}
+	total := len(ncmList)
+	if total == 0 {
+		fmt.Println("All files already converted.")
+		os.Exit(0)
+	}
 
-	skipped := totalOriginal - len(ncmList)
+	skipped := len(ncmListOriginal) - total
 	if skipped > 0 {
 		fmt.Printf("Skipped %d already converted files.\n", skipped)
 	}
@@ -631,12 +604,14 @@ func main() {
 				mu.Lock()
 				if err != nil {
 					failed++
-					fmt.Fprintf(os.Stderr, "[FAIL] %s : %v\n", filepath.Base(path), err)
 				} else {
 					success++
 				}
-				_ = bar.Add(1)
 				mu.Unlock()
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "[FAIL] %s : %v\n", filepath.Base(path), err)
+				}
+				bar.Add(1)
 			}
 		}()
 	}
