@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
-	_ "embed"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -13,19 +12,17 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
-	"unsafe"
 
+	"github.com/bogem/id3v2"
+	"github.com/go-flac/flacpicture"
+	"github.com/go-flac/go-flac"
 	"github.com/schollz/progressbar/v3"
+	winfilepicker "github.com/zyoung11/GO-WinFilePicker"
 )
-
-//go:embed ffmpeg.exe
-var ffmpegExe []byte
 
 type ncmMetadata struct {
 	MusicName string          `json:"musicName"`
@@ -85,6 +82,11 @@ func newAESCipher(key []byte) cipher.Block {
 	return block
 }
 
+var (
+	coreKey = mustHex("687A4852416D736F356B496E62617857")
+	metaKey = mustHex("2331346C6A6B5F215C5D2630553C2728")
+)
+
 func parseArtist(raw json.RawMessage) string {
 	if len(raw) == 0 || string(raw) == "null" {
 		return "Unknown Artist"
@@ -128,30 +130,93 @@ func parseArtist(raw json.RawMessage) string {
 	return "Unknown Artist"
 }
 
-func extractFFmpeg() (string, error) {
-	tmp, err := os.CreateTemp("", "ffmpeg-*.exe")
-	if err != nil {
-		return "", err
+func buildVorbisCommentBlock(comments [][2]string) *flac.MetaDataBlock {
+	var buf bytes.Buffer
+	binary.Write(&buf, binary.LittleEndian, uint32(0))
+	binary.Write(&buf, binary.LittleEndian, uint32(len(comments)))
+	for _, kv := range comments {
+		entry := kv[0] + "=" + kv[1]
+		binary.Write(&buf, binary.LittleEndian, uint32(len(entry)))
+		buf.WriteString(entry)
 	}
-	if _, err := tmp.Write(ffmpegExe); err != nil {
-		tmp.Close()
-		return "", err
+	return &flac.MetaDataBlock{
+		Type: flac.VorbisComment,
+		Data: buf.Bytes(),
 	}
-	if err := tmp.Close(); err != nil {
-		return "", err
-	}
-	return tmp.Name(), nil
 }
 
-var (
-	coreKey = mustHex("687A4852416D736F356B496E62617857")
-	metaKey = mustHex("2331346C6A6B5F215C5D2630553C2728")
-)
+func embedMetadata(path string, meta *ncmMetadata, artist string, imageData []byte) error {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".flac":
+		return embedFLAC(path, meta, artist, imageData)
+	case ".mp3":
+		return embedMP3(path, meta, artist, imageData)
+	default:
+		return fmt.Errorf("unsupported format: %s", ext)
+	}
+}
+
+func embedFLAC(path string, meta *ncmMetadata, artist string, imageData []byte) error {
+	f, err := flac.ParseFile(path)
+	if err != nil {
+		return err
+	}
+
+	f.Meta = append(f.Meta, buildVorbisCommentBlock([][2]string{
+		{"TITLE", meta.MusicName},
+		{"ALBUM", meta.Album},
+		{"ARTIST", artist},
+	}))
+
+	if len(imageData) > 0 {
+		mimeType := "image/jpeg"
+		if bytes.HasPrefix(imageData, []byte{0x89, 0x50}) {
+			mimeType = "image/png"
+		}
+		pic, err := flacpicture.NewFromImageData(
+			flacpicture.PictureTypeFrontCover, "", imageData, mimeType,
+		)
+		if err == nil {
+			picBlock := pic.Marshal()
+			f.Meta = append(f.Meta, &picBlock)
+		}
+	}
+
+	return f.Save(path)
+}
+
+func embedMP3(path string, meta *ncmMetadata, artist string, imageData []byte) error {
+	tag, err := id3v2.Open(path, id3v2.Options{Parse: false})
+	if err != nil {
+		return err
+	}
+	defer tag.Close()
+
+	tag.SetTitle(meta.MusicName)
+	tag.SetArtist(artist)
+	tag.SetAlbum(meta.Album)
+
+	if len(imageData) > 0 {
+		mimeType := "image/jpeg"
+		if bytes.HasPrefix(imageData, []byte{0x89, 0x50}) {
+			mimeType = "image/png"
+		}
+		tag.AddAttachedPicture(id3v2.PictureFrame{
+			Encoding:    id3v2.EncodingUTF8,
+			MimeType:    mimeType,
+			PictureType: id3v2.PTFrontCover,
+			Picture:     imageData,
+		})
+	}
+
+	return tag.Save()
+}
 
 func convertNcmFile(inputPath, outputDir string) error {
 	file, err := os.Open(inputPath)
 	if err != nil {
-		return fmt.Errorf("open ncm file: %w", err)
+		return fmt.Errorf("open: %w", err)
 	}
 	defer file.Close()
 
@@ -160,7 +225,7 @@ func convertNcmFile(inputPath, outputDir string) error {
 		return fmt.Errorf("read header: %w", err)
 	}
 	if string(header) != "CTENFDAM" {
-		return errors.New("invalid ncm file header")
+		return errors.New("invalid ncm header")
 	}
 	if _, err := file.Seek(2, io.SeekCurrent); err != nil {
 		return fmt.Errorf("seek: %w", err)
@@ -208,7 +273,7 @@ func convertNcmFile(inputPath, outputDir string) error {
 	}
 	metaDataB64, err := base64.StdEncoding.DecodeString(string(metaDataEnc[22:]))
 	if err != nil {
-		return fmt.Errorf("base64 decode metadata: %w", err)
+		return fmt.Errorf("base64 decode: %w", err)
 	}
 	block = newAESCipher(metaKey)
 	ecbDec = newECB(block)
@@ -233,88 +298,41 @@ func convertNcmFile(inputPath, outputDir string) error {
 		return fmt.Errorf("read image data: %w", err)
 	}
 
-	tempAudio, err := os.CreateTemp("", fmt.Sprintf("ncm-audio-*.%s", strings.ToLower(meta.Format)))
-	if err != nil {
-		return fmt.Errorf("create temp audio: %w", err)
-	}
-	defer os.Remove(tempAudio.Name())
-
-	hasValidImage := len(imageData) > 0 &&
-		(bytes.HasPrefix(imageData, []byte{0xFF, 0xD8}) ||
-			bytes.HasPrefix(imageData, []byte{0x89, 0x50}))
-
-	var tempImagePath string
-	if hasValidImage {
-		tmpImg, err := os.CreateTemp("", "ncm-cover-*.jpg")
-		if err != nil {
-			return fmt.Errorf("create temp image: %w", err)
-		}
-		if _, err := tmpImg.Write(imageData); err != nil {
-			tmpImg.Close()
-			return fmt.Errorf("write temp image: %w", err)
-		}
-		tmpImg.Close()
-		tempImagePath = tmpImg.Name()
-		defer os.Remove(tempImagePath)
-	}
-
 	chunk := make([]byte, 0x8000)
+	var audioBuf bytes.Buffer
 	for {
 		n, err := file.Read(chunk)
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("read audio chunk: %w", err)
+			return fmt.Errorf("read audio: %w", err)
 		}
 		for i := 0; i < n; i++ {
 			j := byte(i + 1)
 			chunk[i] ^= keyBox[(keyBox[j]+keyBox[(keyBox[j]+j)&0xff])&0xff]
 		}
-		if _, err := tempAudio.Write(chunk[:n]); err != nil {
-			return fmt.Errorf("write audio chunk: %w", err)
-		}
+		audioBuf.Write(chunk[:n])
 	}
-	tempAudio.Close()
 
 	baseName := strings.TrimSuffix(filepath.Base(inputPath), filepath.Ext(inputPath))
+	artist := parseArtist(meta.Artist)
 	outputPath := filepath.Join(outputDir, baseName+"."+meta.Format)
-	artistsStr := parseArtist(meta.Artist)
 
-	var args []string
-	if hasValidImage {
-		args = []string{
-			"-y",
-			"-i", tempAudio.Name(),
-			"-i", tempImagePath,
-			"-map", "0:a", "-map", "1:v",
-			"-c", "copy",
-			"-disposition:v", "attached_pic",
-			"-metadata", "title=" + meta.MusicName,
-			"-metadata", "artist=" + artistsStr,
-			"-metadata", "album=" + meta.Album,
-			outputPath,
-		}
-	} else {
-		args = []string{
-			"-y",
-			"-i", tempAudio.Name(),
-			"-c", "copy",
-			"-metadata", "title=" + meta.MusicName,
-			"-metadata", "artist=" + artistsStr,
-			"-metadata", "album=" + meta.Album,
-			outputPath,
-		}
+	if err := os.WriteFile(outputPath, audioBuf.Bytes(), 0644); err != nil {
+		return fmt.Errorf("write audio: %w", err)
 	}
 
-	ffmpegPath, err := extractFFmpeg()
-	if err != nil {
-		return fmt.Errorf("extract ffmpeg: %w", err)
-	}
-	defer os.Remove(ffmpegPath)
-	cmd := exec.Command(ffmpegPath, args...)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("ffmpeg failed: %w\n%s", err, string(output))
+	if err := embedMetadata(outputPath, &meta, artist, imageData); err != nil {
+		fallbackPath := filepath.Join(outputDir, baseName+".mp3")
+		if err := os.WriteFile(fallbackPath, audioBuf.Bytes(), 0644); err != nil {
+			return fmt.Errorf("write fallback: %w", err)
+		}
+		if err2 := embedMP3(fallbackPath, &meta, artist, imageData); err2 != nil {
+			os.Remove(outputPath)
+			return nil
+		}
+		os.Remove(outputPath)
 	}
 
 	return nil
@@ -339,193 +357,13 @@ func buildExistingFileSet(dir string) map[string]struct{} {
 	return set
 }
 
-// --- Windows COM API for folder selection ---
-
-var (
-	user32             = syscall.NewLazyDLL("user32.dll")
-	ole32              = syscall.NewLazyDLL("ole32.dll")
-	setProcessDPIAware = user32.NewProc("SetProcessDPIAware")
-	coInitializeEx     = ole32.NewProc("CoInitializeEx")
-	coUninitialize     = ole32.NewProc("CoUninitialize")
-	coCreateInstance   = ole32.NewProc("CoCreateInstance")
-	coTaskMemFree      = ole32.NewProc("CoTaskMemFree")
-)
-
-type GUID struct {
-	Data1 uint32
-	Data2 uint16
-	Data3 uint16
-	Data4 [8]byte
-}
-
-var (
-	CLSID_FileOpenDialog = GUID{0xDC1C5A9C, 0xE88A, 0x4DDE, [8]byte{0xA5, 0xA1, 0x60, 0xF8, 0x2A, 0x20, 0xAE, 0xF7}}
-	IID_IFileDialog      = GUID{0x42F85136, 0xDB7E, 0x439C, [8]byte{0x85, 0xF1, 0xE4, 0x07, 0x5D, 0x13, 0x5F, 0xC8}}
-)
-
-type IFileDialogVtbl struct {
-	QueryInterface      uintptr
-	AddRef              uintptr
-	Release             uintptr
-	Show                uintptr
-	SetFileTypes        uintptr
-	SetFileTypeIndex    uintptr
-	GetFileTypeIndex    uintptr
-	Advise              uintptr
-	Unadvise            uintptr
-	SetOptions          uintptr
-	GetOptions          uintptr
-	SetDefaultFolder    uintptr
-	SetFolder           uintptr
-	GetFolder           uintptr
-	GetCurrentSelection uintptr
-	SetFileName         uintptr
-	GetFileName         uintptr
-	SetTitle            uintptr
-	SetOkButtonLabel    uintptr
-	SetFileNameLabel    uintptr
-	GetResult           uintptr
-	AddPlace            uintptr
-	SetDefaultExtension uintptr
-	Close               uintptr
-	SetClientGuid       uintptr
-	ClearClientData     uintptr
-	SetFilter           uintptr
-}
-
-type IFileDialog struct{ lpVtbl *IFileDialogVtbl }
-
-type IShellItemVtbl struct {
-	QueryInterface uintptr
-	AddRef         uintptr
-	Release        uintptr
-	BindToHandler  uintptr
-	GetParent      uintptr
-	GetDisplayName uintptr
-	GetAttributes  uintptr
-	Compare        uintptr
-}
-
-type IShellItem struct{ lpVtbl *IShellItemVtbl }
-
-const (
-	FOS_PICKFOLDERS          = 0x00000020
-	COINIT_APARTMENTTHREADED = 0x2
-	SIGDN_FILESYSPATH        = 0x80028000
-)
-
-func init() { setProcessDPIAware.Call() }
-
-func utf16PtrToString(p *uint16) string {
-	if p == nil {
-		return ""
-	}
-	end := unsafe.Pointer(p)
-	n := 0
-	for *(*uint16)(end) != 0 {
-		end = unsafe.Pointer(uintptr(end) + unsafe.Sizeof(*p))
-		n++
-	}
-	s := make([]uint16, n)
-	ptr := unsafe.Pointer(p)
-	for i := 0; i < n; i++ {
-		s[i] = *(*uint16)(ptr)
-		ptr = unsafe.Pointer(uintptr(ptr) + unsafe.Sizeof(*p))
-	}
-	return syscall.UTF16ToString(s)
-}
-
-func (obj *IFileDialog) Release() uint32 {
-	ret, _, _ := syscall.SyscallN(obj.lpVtbl.Release, uintptr(unsafe.Pointer(obj)))
-	return uint32(ret)
-}
-
-func (obj *IShellItem) Release() uint32 {
-	ret, _, _ := syscall.SyscallN(obj.lpVtbl.Release, uintptr(unsafe.Pointer(obj)))
-	return uint32(ret)
-}
-
-func selectFolder(title string) (string, error) {
-	hr, _, _ := syscall.SyscallN(coInitializeEx.Addr(), 0, COINIT_APARTMENTTHREADED)
-	if int32(hr) < 0 {
-		return "", errors.New("COM initialization failed")
-	}
-	defer syscall.SyscallN(coUninitialize.Addr())
-
-	var pDialog *IFileDialog
-	hr, _, _ = syscall.SyscallN(
-		coCreateInstance.Addr(),
-		uintptr(unsafe.Pointer(&CLSID_FileOpenDialog)), 0, 1,
-		uintptr(unsafe.Pointer(&IID_IFileDialog)),
-		uintptr(unsafe.Pointer(&pDialog)),
-	)
-	if int32(hr) < 0 {
-		return "", errors.New("create FileOpenDialog failed")
-	}
-	defer pDialog.Release()
-
-	hr, _, _ = syscall.SyscallN(
-		pDialog.lpVtbl.SetOptions,
-		uintptr(unsafe.Pointer(pDialog)), FOS_PICKFOLDERS,
-	)
-	if int32(hr) < 0 {
-		return "", errors.New("set options failed")
-	}
-
-	titlePtr, err := syscall.UTF16PtrFromString(title)
-	if err != nil {
-		return "", fmt.Errorf("convert title: %w", err)
-	}
-	hr, _, _ = syscall.SyscallN(
-		pDialog.lpVtbl.SetTitle,
-		uintptr(unsafe.Pointer(pDialog)),
-		uintptr(unsafe.Pointer(titlePtr)),
-	)
-	if int32(hr) < 0 {
-		return "", errors.New("set title failed")
-	}
-
-	hr, _, _ = syscall.SyscallN(
-		pDialog.lpVtbl.Show, uintptr(unsafe.Pointer(pDialog)), 0,
-	)
-	if int32(hr) < 0 {
-		return "", errors.New("user cancelled")
-	}
-
-	var pItem *IShellItem
-	hr, _, _ = syscall.SyscallN(
-		pDialog.lpVtbl.GetResult,
-		uintptr(unsafe.Pointer(pDialog)),
-		uintptr(unsafe.Pointer(&pItem)),
-	)
-	if int32(hr) < 0 {
-		return "", errors.New("get result failed")
-	}
-	defer pItem.Release()
-
-	var pszPath *uint16
-	hr, _, _ = syscall.SyscallN(
-		pItem.lpVtbl.GetDisplayName,
-		uintptr(unsafe.Pointer(pItem)), SIGDN_FILESYSPATH,
-		uintptr(unsafe.Pointer(&pszPath)),
-	)
-	if int32(hr) < 0 {
-		return "", errors.New("get display name failed")
-	}
-	defer syscall.SyscallN(coTaskMemFree.Addr(), uintptr(unsafe.Pointer(pszPath)))
-
-	return utf16PtrToString(pszPath), nil
-}
-
-// --- Main ---
-
 func main() {
-	inputFolder, err := selectFolder("选择VipSongsDownload路径，默认路径：C:/CloudMusic/VipSongsDownload")
+	inputFolder, err := winfilepicker.SelectFolder("选择VipSongsDownload路径，默认路径：C:/CloudMusic/VipSongsDownload")
 	if err != nil || inputFolder == "" {
 		fmt.Println("Input folder selection cancelled:", err)
 		os.Exit(0)
 	}
-	outputFolder, err := selectFolder("选择保存文件夹路径")
+	outputFolder, err := winfilepicker.SelectFolder("选择保存文件夹路径")
 	if err != nil || outputFolder == "" {
 		fmt.Println("Output folder selection cancelled:", err)
 		os.Exit(0)
