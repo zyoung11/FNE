@@ -1,6 +1,6 @@
 # FNE
 
-> 本项目仅用于学习研究，学习 Go 语言文件 I/O、AES 解密、元数据处理和并发编程。
+> 本项目仅用于学习 Go 语言文件 I/O、AES 解密、元数据处理和并发编程。
 
 ## 简介
 
@@ -28,6 +28,7 @@ FNE 是一个可以批量将网易云音乐的 NCM 加密格式转换为 FLAC/MP
 ```bash
 git clone https://github.com/zyoung11/FNE.git
 cd FNE
+go mod tidy
 go build .
 ```
 
