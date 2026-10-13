@@ -113,14 +113,18 @@ func (k *keyReader) consumeCSI(raw chan rune) {
 // readLine reads one line of terminal input through the shared key reader
 func readLine(kr *keyReader, prompt string) string {
 	logInput(prompt)
+	fmt.Print("\x1b[?25h")
+	defer fmt.Print("\x1b[?25l")
 	var b strings.Builder
 	for {
 		key := <-kr.keys
 		if key == KeyEnter {
+			fmt.Print("\r\n")
 			return strings.TrimSpace(b.String())
 		}
-		if key >= 32 && key < 0x1000 {
+		if key >= 32 && key < KeyArrowUp {
 			b.WriteRune(key)
+			fmt.Print(string(key))
 		}
 	}
 }

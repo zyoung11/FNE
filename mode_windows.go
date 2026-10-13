@@ -153,17 +153,13 @@ func showMainMenu(kr *keyReader) int {
 // runApp shows the mode menu and dispatches to the chosen workflow
 func runApp() {
 	for {
-		state, _ := enterRawMode()
 		choice := showMainMenu(globalKeyReader)
-		leaveRawMode(state)
 		clearScreen()
 		switch choice {
 		case 1:
 			runLocalConvert()
 		case 2:
-			state, _ := enterRawMode()
 			runDownloadMode()
-			leaveRawMode(state)
 			clearScreen()
 		case 3:
 			return

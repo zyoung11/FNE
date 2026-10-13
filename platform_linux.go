@@ -39,9 +39,7 @@ func runtimePlatform() string {
 
 // runApp starts the online download workflow directly because local conversion has no use case on Linux
 func runApp() {
-	state, _ := enterRawMode()
 	runDownloadMode()
-	leaveRawMode(state)
 	clearScreen()
 }
 

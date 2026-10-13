@@ -77,8 +77,14 @@ func loadConfigOrDefault() *appConfig {
 // main starts the platform specific application entry
 func main() {
 	globalConfig = loadConfigOrDefault()
+	state, err := enterRawMode()
+	if err != nil {
+		logError(fmt.Sprintf("切换终端原始模式失败 %v", err))
+		os.Exit(1)
+	}
 	globalKeyReader = newKeyReader()
 	runApp()
+	leaveRawMode(state)
 }
 
 // runDownloadMode starts the browser download workflow and mirrors its state in the TUI
