@@ -256,6 +256,105 @@ func (c *neteaseClient) SongDetail(id int64) (*songItem, error) {
 	return item, nil
 }
 
+// songQuality holds the quality levels a song actually offers to the current account
+type songQuality struct {
+	Levels []string
+	Top    string
+	Type   string
+}
+
+// qualityLevels lists the quality levels from lowest to highest
+var qualityLevels = []string{"standard", "higher", "exhigh", "lossless", "hires", "jyeffect", "sky", "dolby", "jymaster"}
+
+// levelSource maps the classic quality levels to their song detail quality object keys
+var levelSource = map[string]string{
+	"standard": "l",
+	"higher":   "m",
+	"exhigh":   "h",
+	"lossless": "sq",
+	"hires":    "hr",
+}
+
+// levelIndex returns the ladder position of a quality level or -1 when unknown
+func levelIndex(level string) int {
+	for i, l := range qualityLevels {
+		if l == level {
+			return i
+		}
+	}
+	return -1
+}
+
+// songQualityFrom derives the available quality levels from a detail entry and its privilege
+func songQualityFrom(song, privilege map[string]any) songQuality {
+	dlLevel, _ := privilege["dlLevel"].(string)
+	maxLevel, _ := privilege["maxBrLevel"].(string)
+	capIdx := levelIndex(dlLevel)
+	if capIdx < 0 {
+		capIdx = levelIndex(maxLevel)
+	}
+	maxIdx := levelIndex(maxLevel)
+	if maxIdx < 0 {
+		maxIdx = capIdx
+	}
+	out := songQuality{}
+	for i, lv := range qualityLevels {
+		if capIdx < 0 || i > capIdx {
+			break
+		}
+		if key, ok := levelSource[lv]; ok {
+			v, exists := song[key]
+			if !exists || v == nil {
+				continue
+			}
+		} else if i > maxIdx {
+			continue
+		}
+		out.Levels = append(out.Levels, lv)
+	}
+	if len(out.Levels) == 0 {
+		return out
+	}
+	out.Top = out.Levels[len(out.Levels)-1]
+	out.Type = "mp3"
+	if levelIndex(out.Top) >= levelIndex("lossless") {
+		out.Type = "flac"
+	}
+	return out
+}
+
+// SongQualities fetches the available quality levels for the given songs in one detail request
+func (c *neteaseClient) SongQualities(ids []int64) (map[int64]songQuality, error) {
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		parts = append(parts, fmt.Sprintf(`{"id":%d}`, id))
+	}
+	body, err := c.post("/api/v3/song/detail", map[string]any{"c": "[" + strings.Join(parts, ",") + "]"}, false)
+	if err != nil {
+		return nil, err
+	}
+	privByID := make(map[int64]map[string]any)
+	rawPriv, _ := body["privileges"].([]any)
+	for _, entry := range rawPriv {
+		obj, _ := entry.(map[string]any)
+		if obj == nil {
+			continue
+		}
+		privByID[int64FromAny(obj["id"])] = obj
+	}
+	out := make(map[int64]songQuality)
+	rawSongs, _ := body["songs"].([]any)
+	for _, entry := range rawSongs {
+		obj, _ := entry.(map[string]any)
+		if obj == nil {
+			continue
+		}
+		id := int64FromAny(obj["id"])
+		out[id] = songQualityFrom(obj, privByID[id])
+	}
+	return out, nil
+}
+
 // AlbumDetail fetches album metadata and its track list
 func (c *neteaseClient) AlbumDetail(id int64) (*albumItem, []songItem, error) {
 	body, err := c.post(fmt.Sprintf("/api/v1/album/%d", id), map[string]any{}, false)

@@ -189,10 +189,7 @@ func (s *webServer) handleAlbum(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"album": album, "songs": songs})
 }
 
-// qualityLevels lists the available quality levels from lowest to highest
-var qualityLevels = []string{"standard", "higher", "exhigh", "lossless", "hires", "jyeffect", "sky", "dolby", "jymaster"}
-
-// handleCheck probes the maximum available quality level for each selected song
+// handleCheck reports the real quality levels each selected song offers to the current account
 func (s *webServer) handleCheck(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Songs []songItem `json:"songs"`
@@ -202,24 +199,25 @@ func (s *webServer) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type checkResult struct {
-		ID       int64  `json:"id"`
-		MaxLevel string `json:"maxLevel"`
-		Type     string `json:"type"`
-		OK       bool   `json:"ok"`
+		ID     int64    `json:"id"`
+		Levels []string `json:"levels"`
+		Top    string   `json:"top"`
+		Type   string   `json:"type"`
+		OK     bool     `json:"ok"`
+	}
+	ids := make([]int64, 0, len(req.Songs))
+	for _, song := range req.Songs {
+		ids = append(ids, song.ID)
+	}
+	qualities, err := s.client.SongQualities(ids)
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
 	}
 	results := make([]checkResult, 0, len(req.Songs))
 	for _, song := range req.Songs {
-		res := checkResult{ID: song.ID}
-		info, err := s.client.SongURL(song.ID, "jymaster")
-		if err != nil {
-			res.MaxLevel = ""
-			res.OK = false
-		} else {
-			res.MaxLevel = info.Level
-			res.Type = info.Type
-			res.OK = true
-		}
-		results = append(results, res)
+		q := qualities[song.ID]
+		results = append(results, checkResult{ID: song.ID, Levels: q.Levels, Top: q.Top, Type: q.Type, OK: len(q.Levels) > 0})
 	}
 	writeJSON(w, map[string]any{"results": results})
 }

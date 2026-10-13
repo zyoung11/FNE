@@ -658,15 +658,14 @@ async function goQuality() {
         return `<div class="q-row"><div class="main"><div class="name">${esc(s.name)}</div>
           <div class="sub">${esc(s.artists)}</div></div><div class="label">不可下载</div></div>`;
       }
-      const maxIdx = LEVELS.findIndex((l) => l[0] === r.maxLevel);
-      const opts = LEVELS.slice(0, maxIdx + 1).map((l) =>
-        `<option value="${l[0]}" ${l[0] === r.maxLevel ? 'selected' : ''}>${l[1]}</option>`).join('');
-      quality.set(s.id, r.maxLevel);
+      const opts = (r.levels || []).map((lv) =>
+        `<option value="${lv}" ${lv === r.top ? 'selected' : ''}>${LEVEL_NAME[lv] || lv}</option>`).join('');
+      quality.set(s.id, r.top);
       return `<div class="q-row"><div class="main"><div class="name">${esc(s.name)}</div>
-        <div class="sub">${esc(s.artists)} · 最高 ${LEVEL_NAME[r.maxLevel] || r.maxLevel} · ${r.type}</div></div>
+        <div class="sub">${esc(s.artists)} · 最高 ${LEVEL_NAME[r.top] || r.top} · ${r.type}</div></div>
         <select data-id="${s.id}" onchange="quality.set(${s.id}, this.value)">${opts}</select></div>`;
     }).join('');
-    document.getElementById('qInfo').textContent = selected.size + ' 首 · 各自最高档位已标注';
+    document.getElementById('qInfo').textContent = selected.size + ' 首 · 档位为实际可下载档位';
   } catch (e) {
     empty.style.display = '';
     empty.textContent = '音质检测失败 ' + e.message;
