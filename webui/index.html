@@ -362,6 +362,9 @@ button.act:disabled { opacity: 0.4; cursor: not-allowed; }
   </div>
   <div class="wrap">
     <div class="step-head"><span class="label">音质</span></div>
+    <div class="q-row"><div class="main"><div class="name">统一音质</div>
+      <div class="sub">各曲目自动取所选档位内的最优可用档</div></div>
+      <select id="qUnified" onchange="applyUnified()"></select></div>
     <div class="rowlist" id="qualityList"></div>
     <div class="empty" id="qualityEmpty" style="display:none">检测中…</div>
   </div>
@@ -422,7 +425,7 @@ const LEVEL_NAME = Object.fromEntries(LEVELS);
 const HINTS = {
   viewLogin: '使用网易云音乐 APP 扫码登录 · r 刷新 · s 跳过',
   viewSearch: '点击行选择 · 输入歌名 / 专辑名 / 链接 / ID 搜索',
-  viewQuality: '每首歌按可用最高档位选择 · Enter 确认',
+  viewQuality: '选择统一音质 · 各曲目自动取所选档位内最优',
   viewFolder: '输入或粘贴保存文件夹路径 · Enter 确认',
   viewProgress: '下载完成后自动返回搜索'
 };
@@ -433,6 +436,7 @@ let results = [];
 let albumTracks = [];
 let selected = new Map();
 let quality = new Map();
+let songLevels = new Map();
 let loginTimer = null;
 let jobTimer = null;
 
@@ -652,24 +656,50 @@ async function goQuality() {
       body: JSON.stringify({ songs })
     });
     empty.style.display = 'none';
-    list.innerHTML = songs.map((s, i) => {
-      const r = (data.results || []).find((x) => x.id === s.id) || {};
+    const checkResults = data.results || [];
+    const union = new Set();
+    for (const r of checkResults) {
+      if (r.ok && r.levels) {
+        songLevels.set(r.id, r.levels);
+        r.levels.forEach((lv) => union.add(lv));
+      }
+    }
+    const unionLevels = LEVELS.map((l) => l[0]).filter((lv) => union.has(lv));
+    const unified = document.getElementById('qUnified');
+    unified.innerHTML = unionLevels.map((lv) => `<option value="${lv}">${LEVEL_NAME[lv] || lv}</option>`).join('');
+    if (unionLevels.length) unified.value = unionLevels[unionLevels.length - 1];
+    list.innerHTML = songs.map((s) => {
+      const r = checkResults.find((x) => x.id === s.id) || {};
       if (!r.ok) {
         return `<div class="q-row"><div class="main"><div class="name">${esc(s.name)}</div>
           <div class="sub">${esc(s.artists)}</div></div><div class="label">不可下载</div></div>`;
       }
-      const opts = (r.levels || []).map((lv) =>
-        `<option value="${lv}" ${lv === r.top ? 'selected' : ''}>${LEVEL_NAME[lv] || lv}</option>`).join('');
-      quality.set(s.id, r.top);
       return `<div class="q-row"><div class="main"><div class="name">${esc(s.name)}</div>
         <div class="sub">${esc(s.artists)} · 最高 ${LEVEL_NAME[r.top] || r.top} · ${r.type}</div></div>
-        <select data-id="${s.id}" onchange="quality.set(${s.id}, this.value)">${opts}</select></div>`;
+        <div class="label" id="q${s.id}"></div></div>`;
     }).join('');
-    document.getElementById('qInfo').textContent = selected.size + ' 首 · 档位为实际可下载档位';
+    applyUnified();
+    document.getElementById('qInfo').textContent = selected.size + ' 首 · 统一音质自动取各曲目最优可用档';
   } catch (e) {
     empty.style.display = '';
     empty.textContent = '音质检测失败 ' + e.message;
   }
+}
+
+function applyUnified() {
+  const chosen = document.getElementById('qUnified').value;
+  const chosenIdx = LEVELS.findIndex((l) => l[0] === chosen);
+  quality.clear();
+  songLevels.forEach((levels, id) => {
+    let resolved = levels[0];
+    for (const lv of levels) {
+      const idx = LEVELS.findIndex((l) => l[0] === lv);
+      if (idx >= 0 && idx <= chosenIdx) resolved = lv;
+    }
+    quality.set(id, resolved);
+    const cell = document.getElementById('q' + id);
+    if (cell) cell.textContent = LEVEL_NAME[resolved] || resolved;
+  });
 }
 
 function goFolder() {
