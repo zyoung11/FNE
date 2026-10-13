@@ -215,56 +215,6 @@ func truncateWidth(text string, limit int) string {
 	return b.String()
 }
 
-// menuItem is one selectable entry of the main menu
-type menuItem struct {
-	label string
-	value int
-}
-
-// showMainMenu renders the centered mode menu and returns the chosen mode value
-func showMainMenu(kr *keyReader) int {
-	items := []menuItem{
-		{label: "本地转换", value: 1},
-		{label: "在线下载", value: 2},
-	}
-	cursor := 0
-	for {
-		w, h := termSize()
-		var b strings.Builder
-		b.WriteString("\x1b[2J\x1b[3J\x1b[H")
-		startRow := max((h-len(items)-3)/2+1, 1)
-		for row := 1; row < startRow; row++ {
-			b.WriteString("\r\n")
-		}
-		for i, it := range items {
-			if i == cursor {
-				b.WriteString(centerLine(colorAccent+" > "+it.label+" <"+colorReset, w))
-			} else {
-				b.WriteString(centerLine(colorText3+"   "+it.label+"   "+colorReset, w))
-			}
-			b.WriteString("\r\n")
-		}
-		fmt.Fprintf(&b, "\x1b[%d;1H", h)
-		b.WriteString(centerLine(colorHint+"方向键 选择    Enter 确认    q 退出"+colorReset, w))
-		fmt.Print(b.String())
-		key := <-kr.keys
-		switch key {
-		case KeyArrowUp, KeyArrowLeft:
-			cursor = (cursor - 1 + len(items)) % len(items)
-		case KeyArrowDown, KeyArrowRight:
-			cursor = (cursor + 1) % len(items)
-		case KeyEnter:
-			return items[cursor].value
-		case '1':
-			return 1
-		case '2':
-			return 2
-		case 'q', 'Q':
-			return 3
-		}
-	}
-}
-
 // downloadStatus holds the shared download state rendered by the TUI
 type downloadStatus struct {
 	mu      sync.Mutex
@@ -321,7 +271,7 @@ func runDownloadUI(kr *keyReader, status *downloadStatus, port int) {
 			b.WriteString("\r\n")
 		}
 		fmt.Fprintf(&b, "\x1b[%d;1H", h)
-		b.WriteString(centerLine(colorHint+"按 q 返回"+colorReset, w))
+		b.WriteString(centerLine(colorHint+downloadQuitHint()+colorReset, w))
 		frame := b.String()
 		if frame != lastFrame {
 			fmt.Print(frame)

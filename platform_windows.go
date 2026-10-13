@@ -79,3 +79,8 @@ func isQMC2Format(ext string) bool {
 	}
 	return false
 }
+
+// downloadQuitHint returns the bottom hint text for leaving the download mode
+func downloadQuitHint() string {
+	return "按 q 返回"
+}
