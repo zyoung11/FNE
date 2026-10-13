@@ -21,7 +21,7 @@ FNE 是一个可以批量将网易云音乐和 QQ 音乐的加密格式转换为
 > 网易云的加密文件为 `.ncm` 格式，QQ 音乐的加密文件为 `.mflac` / `.mgg` 等格式。
 > **转换 QQ 音乐文件时需要 QQ 音乐客户端处于运行并已登录状态。**
 
-1. 下载预编译可执行文件[`FNE.exe`](https://github.com/zyoung11/FNE/releases/download/0.3.0/FNE.exe)
+1. 下载预编译可执行文件[`FNE.exe`](https://github.com/zyoung11/FNE/releases/download/0.3.1/FNE.exe)
 2. 双击运行 `FNE.exe`
 
 2. 选择 NCM 或 mflac 或 mgg 文件所在的文件夹

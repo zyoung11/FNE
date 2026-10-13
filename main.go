@@ -65,8 +65,12 @@ func preserveCreationTime(src, dst string) {
 		return
 	}
 	creationTime := winAttr.CreationTime
+	dstPtr, err := syscall.UTF16PtrFromString(dst)
+	if err != nil {
+		return
+	}
 	h, err := syscall.CreateFile(
-		syscall.StringToUTF16Ptr(dst),
+		dstPtr,
 		syscall.FILE_WRITE_ATTRIBUTES,
 		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE,
 		nil,

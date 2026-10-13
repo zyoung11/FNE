@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode/utf16"
@@ -44,17 +45,14 @@ func initAPIConfig(concurrent, delayMin, delayMax int) {
 	apiLimiter = make(chan struct{}, concurrent)
 }
 
-// apiRequestDelay adds a random delay between API requests
+// apiRequestDelay waits a random delay then acquires a rate limit slot
 func apiRequestDelay() {
-	// Acquire rate limit slot
-	apiLimiter <- struct{}{}
-
-	// Random delay
 	delay := apiConfig.delayMin
 	if apiConfig.delayMax > apiConfig.delayMin {
 		delay += rand.Intn(apiConfig.delayMax - apiConfig.delayMin)
 	}
 	time.Sleep(time.Duration(delay) * time.Millisecond)
+	apiLimiter <- struct{}{}
 }
 
 // apiRequestDone releases the rate limit slot
@@ -67,6 +65,9 @@ var albumCoverCache = make(map[string][]byte)
 
 // albumMidCache caches album_mid by song_mid
 var albumMidCache = make(map[string]string)
+
+// cacheMu guards albumCoverCache and albumMidCache for concurrent access
+var cacheMu sync.Mutex
 
 var (
 	procVirtualQueryEx    = syscall.NewLazyDLL("kernel32.dll").NewProc("VirtualQueryEx")
@@ -595,17 +596,18 @@ func fetchEkeyFromAPI(creds *QQMusicCredentials, filename, songmid string) (stri
 
 // fetchAlbumCover fetches the album cover image for a song
 func fetchAlbumCover(songMid string) ([]byte, error) {
-	// Check album_mid cache first
+	cacheMu.Lock()
 	albumMid, cached := albumMidCache[songMid]
 	if cached {
 		if cover, ok := albumCoverCache[albumMid]; ok {
+			cacheMu.Unlock()
 			return cover, nil
 		}
-		// album_mid cached but cover not yet downloaded
+		cacheMu.Unlock()
 		return downloadAndCache(albumMid)
 	}
+	cacheMu.Unlock()
 
-	// First get song details to find album_mid
 	requestBody := map[string]any{
 		"comm": map[string]any{
 			"ct": 19,
@@ -665,20 +667,22 @@ func fetchAlbumCover(songMid string) ([]byte, error) {
 
 	albumMid = result.Songinfo.Data.TrackInfo.Album.Mid
 
-	// Cache album_mid
+	cacheMu.Lock()
 	albumMidCache[songMid] = albumMid
+	cacheMu.Unlock()
 
 	return downloadAndCache(albumMid)
 }
 
 // downloadAndCache downloads album cover and caches it
 func downloadAndCache(albumMid string) ([]byte, error) {
-	// Check cover cache
-	if cached, ok := albumCoverCache[albumMid]; ok {
+	cacheMu.Lock()
+	cached, ok := albumCoverCache[albumMid]
+	cacheMu.Unlock()
+	if ok {
 		return cached, nil
 	}
 
-	// Download cover image (800x800 for high quality)
 	coverURL := fmt.Sprintf("https://y.gtimg.cn/music/photo_new/T002R800x800M000%s.jpg", albumMid)
 	resp, err := http.Get(coverURL)
 	if err != nil {
@@ -695,7 +699,9 @@ func downloadAndCache(albumMid string) ([]byte, error) {
 		return nil, fmt.Errorf("read cover: %w", err)
 	}
 
+	cacheMu.Lock()
 	albumCoverCache[albumMid] = coverData
+	cacheMu.Unlock()
 	return coverData, nil
 }
 
