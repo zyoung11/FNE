@@ -1,19 +1,15 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/schollz/progressbar/v3"
-	winfilepicker "github.com/zyoung11/GO-WinFilePicker"
 )
 
 // appConfig holds the application configuration
@@ -24,16 +20,16 @@ type appConfig struct {
 	APIConcurrent int    `json:"apiConcurrent"`
 	APIDelayMin   int    `json:"apiDelayMin"`
 	APIDelayMax   int    `json:"apiDelayMax"`
+	NameFormat    string `json:"nameFormat"`
 }
 
-// loadConfig loads configuration from config.json in the same directory as the executable
+// loadConfig loads configuration from config.json in the platform config directory
 func loadConfig() (*appConfig, error) {
-	exePath, err := os.Executable()
+	dir, err := configDir()
 	if err != nil {
-		return nil, fmt.Errorf("get executable path: %w", err)
+		return nil, fmt.Errorf("get config dir: %w", err)
 	}
-	exeDir := filepath.Dir(exePath)
-	configPath := filepath.Join(exeDir, "config.json")
+	configPath := filepath.Join(dir, "config.json")
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -54,37 +50,6 @@ func validateDirectory(path string) bool {
 	return err == nil && info.IsDir()
 }
 
-// preserveCreationTime copies the creation time from src to dst
-func preserveCreationTime(src, dst string) {
-	info, err := os.Stat(src)
-	if err != nil {
-		return
-	}
-	winAttr, ok := info.Sys().(*syscall.Win32FileAttributeData)
-	if !ok {
-		return
-	}
-	creationTime := winAttr.CreationTime
-	dstPtr, err := syscall.UTF16PtrFromString(dst)
-	if err != nil {
-		return
-	}
-	h, err := syscall.CreateFile(
-		dstPtr,
-		syscall.FILE_WRITE_ATTRIBUTES,
-		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE,
-		nil,
-		syscall.OPEN_EXISTING,
-		syscall.FILE_FLAG_BACKUP_SEMANTICS,
-		0,
-	)
-	if err != nil {
-		return
-	}
-	defer syscall.CloseHandle(h)
-	syscall.SetFileTime(h, &creationTime, nil, nil)
-}
-
 // cleanupBadFiles removes temporary files created during conversion
 func cleanupBadFiles(dir string) {
 	entries, err := os.ReadDir(dir)
@@ -99,15 +64,6 @@ func cleanupBadFiles(dir string) {
 			os.Remove(filepath.Join(dir, e.Name()))
 		}
 	}
-}
-
-// isQMC2Format checks if the file extension is a QMC2 encrypted format
-func isQMC2Format(ext string) bool {
-	switch ext {
-	case ".mflac", ".mflac0", ".mflach", ".mgg", ".mgg0", ".mgg1", ".mggl":
-		return true
-	}
-	return false
 }
 
 // buildExistingFileSet builds a set of already converted file names
@@ -175,66 +131,113 @@ func scanFilesRecursively(dir string, recursive bool) ([]string, []string, error
 	return ncmFiles, qmc2Files, nil
 }
 
-func main() {
-	if rand.Intn(2) == 0 {
-		printASCII_1()
-	} else {
-		printASCII_2()
+// globalKeyReader is the shared terminal input decoder
+var globalKeyReader *keyReader
+
+// globalConfig holds the active application configuration
+var globalConfig *appConfig
+
+// defaultDownloadFolder returns the configured default save folder for the download mode
+func defaultDownloadFolder() string {
+	if globalConfig == nil {
+		return ""
 	}
+	return globalConfig.OutputFolder
+}
 
-	var inputFolder, outputFolder string
-	var recursive bool
-
+// loadConfigOrDefault loads config.json or falls back to defaults when it is missing
+func loadConfigOrDefault() *appConfig {
 	config, err := loadConfig()
 	if err != nil {
-		initAPIConfig(3, 200, 800)
-	} else {
-		if config.InputFolder != "" {
-			if validateDirectory(config.InputFolder) {
-				inputFolder = config.InputFolder
-			}
+		config = &appConfig{}
+	}
+	if config.APIConcurrent <= 0 {
+		config.APIConcurrent = 3
+	}
+	if config.APIDelayMin < 0 {
+		config.APIDelayMin = 200
+	}
+	if config.APIDelayMax < config.APIDelayMin {
+		config.APIDelayMax = config.APIDelayMin + 600
+	}
+	if config.NameFormat == "" {
+		config.NameFormat = "artist - title"
+	}
+	return config
+}
+
+// main shows the mode menu and dispatches to the local or download workflow
+func main() {
+	globalConfig = loadConfigOrDefault()
+	globalKeyReader = newKeyReader()
+	for {
+		state, _ := enterRawMode()
+		choice := showMainMenu(globalKeyReader)
+		leaveRawMode(state)
+		clearScreen()
+		switch choice {
+		case 1:
+			runLocalConvert()
+		case 2:
+			state, _ := enterRawMode()
+			runDownloadMode()
+			leaveRawMode(state)
+			clearScreen()
+		case 3:
+			return
 		}
-		if config.OutputFolder != "" {
-			outputFolder = config.OutputFolder
-		}
-		recursive = config.Recursive
-		initAPIConfig(config.APIConcurrent, config.APIDelayMin, config.APIDelayMax)
+	}
+}
+
+// runLocalConvert converts local NCM and QMC2 files picked on the terminal
+func runLocalConvert() {
+	config := globalConfig
+	initAPIConfig(config.APIConcurrent, config.APIDelayMin, config.APIDelayMax)
+
+	var inputFolder, outputFolder string
+	if config.InputFolder != "" && validateDirectory(config.InputFolder) {
+		inputFolder = config.InputFolder
+	}
+	if config.OutputFolder != "" {
+		outputFolder = config.OutputFolder
 	}
 
 	if inputFolder == "" {
-		selected, err := winfilepicker.SelectFolder("选择VipSongsDownload路径，默认路径：C:/CloudMusic/VipSongsDownload")
+		selected, err := selectFolder("选择VipSongsDownload路径，默认路径 C:/CloudMusic/VipSongsDownload")
 		if err != nil || selected == "" {
-			fmt.Println("Input folder selection cancelled:", err)
-			os.Exit(0)
+			logWarn("输入文件夹选择已取消")
+			readLine(globalKeyReader, "按回车继续")
+			return
 		}
 		inputFolder = selected
 	}
 
 	if outputFolder == "" {
-		selected, err := winfilepicker.SelectFolder("选择保存文件夹路径")
+		selected, err := selectFolder("选择保存文件夹路径")
 		if err != nil || selected == "" {
-			fmt.Println("Output folder selection cancelled:", err)
-			os.Exit(0)
+			logWarn("输出文件夹选择已取消")
+			readLine(globalKeyReader, "按回车继续")
+			return
 		}
 		outputFolder = selected
 	}
 
 	if _, err := os.Stat(inputFolder); os.IsNotExist(err) {
-		fmt.Printf("Input folder does not exist: %s\n", inputFolder)
-		os.Exit(1)
+		logError(fmt.Sprintf("输入文件夹不存在 %s", inputFolder))
+		readLine(globalKeyReader, "按回车继续")
+		return
 	}
 	_ = os.MkdirAll(outputFolder, 0755)
 
-	// Scan for files
-	ncmListOriginal, qmc2ListOriginal, err := scanFilesRecursively(inputFolder, recursive)
+	ncmListOriginal, qmc2ListOriginal, err := scanFilesRecursively(inputFolder, config.Recursive)
 	if err != nil {
-		fmt.Printf("Scan input folder error: %v\n", err)
-		os.Exit(1)
+		logError(fmt.Sprintf("扫描输入文件夹失败 %v", err))
+		readLine(globalKeyReader, "按回车继续")
+		return
 	}
 
 	existing := buildExistingFileSet(outputFolder)
 
-	// Filter out already converted files
 	var ncmList, qmc2List []string
 	for _, path := range ncmListOriginal {
 		baseName := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
@@ -252,12 +255,13 @@ func main() {
 	total := len(ncmList) + len(qmc2List)
 	skipped := (len(ncmListOriginal) - len(ncmList)) + (len(qmc2ListOriginal) - len(qmc2List))
 	if skipped > 0 {
-		fmt.Printf("Skipped %d already converted files.\n", skipped)
+		logInfo(fmt.Sprintf("已跳过 %d 个已转换的文件", skipped))
 	}
 
 	if total == 0 {
-		fmt.Println("No files to convert.")
-		os.Exit(0)
+		logWarn("没有需要转换的文件")
+		readLine(globalKeyReader, "按回车继续")
+		return
 	}
 
 	bar := progressbar.NewOptions(total,
@@ -350,46 +354,22 @@ func main() {
 	}
 	fmt.Println("============================================================")
 	fmt.Println()
-	fmt.Print("Press Enter to exit...")
-	bufio.NewReader(os.Stdin).ReadBytes('\n')
+	readLine(globalKeyReader, "按回车继续")
 }
 
-func printASCII_1() {
-	fmt.Print(`
-
-
-
-				[0;37;40m▄[0;97;1;40m▀███████████▀[0;90;1;40m▄█[0;37;40m [0;97;1;40m▀██[0;97;1;47m▀[0;97;1;40m███▀[0;37;40m    [0;97;1;40m▀██[0;97;1;47m▀[0;97;1;40m██▀[0;37;40m [0;97;1;40m▀█████████████▀[0;90;1;40m▄[0m
-				[0;37;40m█▄[0;97;1;40m▀███▀[0;90;1;40m▄[0;37;40m     [0;90;1;40m▀██[0;37;40m █▄[0;97;1;40m▀██▀[0;37;40m [0;90;1;40m▄▀[0;37;40m   █ [0;97;1;40m█[0;97;1;47m▄[0;97;1;40m█[0;37;40m [0;90;1;40m█[0;37;40m █▄▄[0;97;1;40m▀▀▀▀▀▀▀▀▀▀[0;90;1;40m▄██[0m
-				[0;37;40m██▄[0;97;1;40m▀▀[0;90;1;40m▄█[0;37;40m        [0;90;1;40m▀[0;37;40m ██▄[0;97;1;40m▀[0;37;40m [0;90;1;40m▄█▄▀[0;37;40m   ██▄[0;97;1;40m▀[0;90;1;40m▄██[0;37;40m ██▀▀        [0;90;1;40m▀▀██[0m
-				[0;37;40m███ [0;90;1;40m██▀[0;37;40m          ███ [0;90;1;40m█████▄[0;37;40m  ███ [0;90;1;40m███[0;37;40m ▄ [0;97;1;40m▄▄▄▄▄▄▄▄▄▄▄▄[0;37;40m [0;90;1;40m▄[0m
-				[0;37;40m███ [0;90;1;40m▀[0;97;1;40m▄▄▄▄▄▄▄▄[0;37;40m [0;90;1;40m▄[0;37;40m  █[0;97;1;47m▄[0;37;40m█ [0;90;1;40m███[0;37;40m ▀▄[0;90;1;40m▀▄[0;37;40m▀██ [0;90;1;40m███[0;37;40m ██▄[0;97;1;40m▀█████████[0;37;40m [0;90;1;40m██[0m
-				[0;37;40m███ [0;97;1;40m▀▀▀▀▀▀▀▀[0;90;1;40m▄██[0;37;40m  [0;97;1;47m▄[0;90;1;40m▀[0;97;1;40m█[0;37;40m [0;90;1;40m██[0;37;40m [0;90;1;40m▀[0;37;40m ▄█▄[0;90;1;40m▀[0;37;40m▄█ [0;90;1;40m███[0;37;40m █▀           [0;90;1;40m▀██[0m
-				[0;37;40m███ [0;90;1;40m█▄[0;37;40m▀█▀    [0;90;1;40m▀█[0;37;40m  [0;90;1;40m▄[0;37;40m▄[0;97;1;40m▄[0;37;40m [0;90;1;40m██▄[0;37;40m   ▀████ [0;90;1;40m███[0;37;40m                [0;90;1;40m▀[0m
-				[0;37;40m███ [0;90;1;40m███[0;37;40m          ▀[0;90;1;40m▄[0;37;40m█ [0;90;1;40m██[0;37;40m     ▀███ [0;90;1;40m███[0;37;40m █▄[0;97;1;40m▀██████████▀[0;90;1;40m██[0m
-				[0;37;40m██▀ [0;90;1;40m███[0;37;40m          [0;90;1;40m▄[0;97;1;40m█[0;37;40m█ [0;90;1;40m██[0;37;40m [0;90;1;40m▀[0;37;40m    ▄██ [0;90;1;40m███[0;37;40m ███ [0;97;1;40m▀▀▀▀▀▀▀▀[0;37;40m [0;90;1;40m███[0m
-				[0;37;40m▀    [0;90;1;40m▀█[0;37;40m          █▀   [0;90;1;40m▀█▄[0;37;40m    ▄▀   [0;90;1;40m▀█[0;37;40m █▀            [0;90;1;40m▀█[0m
-
-
-
-
-
-`)
-}
-
-func printASCII_2() {
-	fmt.Print(`
-
-
-					[0;37;40m  [0;31;40m▄▄[0;91;1;41m·▀▀[0;91;1;40m▄▄▄[0;37;40m  [0;31;40m▄█[0;91;1;41m▀[0;31;40m▄[0;37;40m [0;31;40m▄[0;91;1;41m▀▀█[0;91;1;40m▄[0;37;40m   [0;31;40m▄▄[0;91;1;41m·▀▀[0;91;1;40m▄▄▄[0;37;40m [0m
-					[0;37;40m [0;91;1;41m■[0;37;41m▄▄[0;31;40m█[0;91;1;41m·[0;31;40m█[0;37;41m▄[0;37;40m█[0;31;40m█[0;91;1;41m▀[0;31;40m▐█[0;91;1;41m·[0;31;47m▌[0;97;1;47m▄[0;37;40m [0;90;1;40m█[0;31;47m▀[0;91;1;41m■[0;31;47m▌[0;97;1;40m█[0;31;40m▌[0;37;40m [0;91;1;41m■[0;37;41m▄▄[0;31;40m█[0;91;1;41m·[0;31;40m█[0;37;41m▄[0;37;40m█[0;31;40m█[0;91;1;41m▀[0m
-					[0;31;40m▐[0;90;1;40m█[0;37;40m██[0;37;41m▐[0;97;1;47m▀[0;37;40m▄▄[0;97;1;40m▄[0;37;40m [0;91;1;40m▌[0;90;1;41m▌[0;37;41m▄▌▐[0;37;40m█[0;97;1;47m▀[0;97;1;41m▄[0;37;40m█[0;37;41m▄[0;91;1;47m▌[0;97;1;40m█[0;37;40m [0;31;40m▐[0;90;1;40m█[0;37;40m██[0;37;41m▐[0;97;1;47m▀[0;37;40m▄▄[0;97;1;40m▄[0;37;40m [0;91;1;40m▌[0m
-					[0;37;40m [0;90;1;40m█[0;37;40m███[0;97;1;47m▄[0;37;40m▀▀[0;97;1;40m▀[0;37;40m  [0;90;1;40m█[0;37;40m█[0;37;41m▐[0;37;40m█[0;97;1;40m█[0;90;1;47m▄[0;37;40m██[0;37;41m█▐[0;97;1;40m█[0;37;40m  [0;90;1;40m█[0;37;40m███[0;97;1;47m▄[0;37;40m▀▀[0;97;1;40m▀[0;37;40m  [0m
-					[0;37;40m [0;90;1;40m█[0;37;40m███[0;97;1;40m█[0;37;40m     [0;90;1;40m█[0;37;40m███[0;97;1;40m█[0;90;1;40m▀█[0;37;40m███[0;97;1;40m█[0;37;40m  [0;90;1;40m█[0;37;40m███[0;97;1;40m█[0;31;40m▄[0;91;1;41m▀[0;91;1;40m▄[0;37;40m  [0m
-					[0;37;40m [0;90;1;40m█[0;90;1;47m   [0;97;1;40m█[0;37;40m     [0;90;1;40m█[0;37;40m███[0;97;1;40m█[0;37;40m [0;90;1;40m█[0;37;40m███[0;97;1;40m█[0;37;40m  [0;90;1;40m█[0;90;1;47m    [0;31;47m▐▀ [0;97;1;40m█[0;37;40m [0m
-					[0;37;40m [0;90;1;40m▀[0;37;40m▀▀▀[0;97;1;40m▀[0;37;40m     [0;90;1;40m▀[0;37;40m▀▀▀[0;97;1;40m▀[0;37;40m [0;90;1;40m▀[0;37;40m▀▀▀[0;97;1;40m▀[0;37;40m  [0;90;1;40m▀[0;37;40m▀▀▀▀▀▀▀[0;97;1;40m▀[0;37;40m [0m
-
-
-
-`)
+// runDownloadMode starts the browser download workflow and mirrors its state in the TUI
+func runDownloadMode() {
+	client := newNeteaseClient()
+	status := &downloadStatus{}
+	dl := newDownloader(client, status, globalConfig.NameFormat)
+	srv := newWebServer(client, dl, status, webUIHTML)
+	port, err := srv.Start()
+	if err != nil {
+		logError(fmt.Sprintf("启动 Web 服务失败 %v", err))
+		readLine(globalKeyReader, "按回车继续")
+		return
+	}
+	openBrowser(fmt.Sprintf("http://127.0.0.1:%d", port))
+	runDownloadUI(globalKeyReader, status, port)
+	srv.Stop()
 }

@@ -53,6 +53,20 @@ func (x *ecb) Decrypt(dst, src []byte) {
 	}
 }
 
+func (x *ecb) Encrypt(dst, src []byte) {
+	if len(src)%x.blockSize != 0 {
+		panic("crypto/cipher: input not full blocks")
+	}
+	if len(dst) < len(src) {
+		panic("crypto/cipher: output smaller than input")
+	}
+	for len(src) > 0 {
+		x.b.Encrypt(dst, src[:x.blockSize])
+		src = src[x.blockSize:]
+		dst = dst[x.blockSize:]
+	}
+}
+
 func unpad(src []byte) []byte {
 	length := len(src)
 	if length == 0 {
@@ -208,6 +222,7 @@ func embedMP3(path string, meta *ncmMetadata, artist string, imageData []byte) e
 	}
 	defer tag.Close()
 
+	tag.SetDefaultEncoding(id3v2.EncodingUTF8)
 	tag.SetTitle(meta.MusicName)
 	tag.SetArtist(artist)
 	tag.SetAlbum(meta.Album)
