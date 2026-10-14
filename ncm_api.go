@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -30,23 +31,33 @@ type neteaseClient struct {
 	http     *http.Client
 }
 
+// artistRef pairs an artist id with its display name
+type artistRef struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
 // songItem holds track metadata returned by search and detail endpoints
 type songItem struct {
-	ID       int64  `json:"id"`
-	Name     string `json:"name"`
-	Artists  string `json:"artists"`
-	Album    string `json:"album"`
-	CoverURL string `json:"coverUrl"`
-	Duration int64  `json:"duration"`
+	ID         int64       `json:"id"`
+	Name       string      `json:"name"`
+	Artists    string      `json:"artists"`
+	Album      string      `json:"album"`
+	CoverURL   string      `json:"coverUrl"`
+	Duration   int64       `json:"duration"`
+	ArtistID   int64       `json:"artistId"`
+	AlbumID    int64       `json:"albumId"`
+	ArtistRefs []artistRef `json:"artistRefs"`
 }
 
 // albumItem holds album metadata returned by search and detail endpoints
 type albumItem struct {
-	ID       int64  `json:"id"`
-	Name     string `json:"name"`
-	Artist   string `json:"artist"`
-	CoverURL string `json:"coverUrl"`
-	TrackNum int    `json:"trackNum"`
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	Artist      string `json:"artist"`
+	CoverURL    string `json:"coverUrl"`
+	TrackNum    int    `json:"trackNum"`
+	PublishTime int64  `json:"publishTime"`
 }
 
 // newNeteaseClient loads persisted cookies or prepares an anonymous session
@@ -235,6 +246,80 @@ func (c *neteaseClient) SearchAlbums(keyword string, limit, offset int) ([]album
 		albums = append(albums, item)
 	}
 	return albums, int(total), nil
+}
+
+// artistItem holds artist metadata returned by artist search
+type artistItem struct {
+	ID        int64  `json:"id"`
+	Name      string `json:"name"`
+	CoverURL  string `json:"coverUrl"`
+	AlbumSize int    `json:"albumSize"`
+}
+
+// SearchArtists searches artists by keyword
+func (c *neteaseClient) SearchArtists(keyword string, limit, offset int) ([]artistItem, int, error) {
+	body, err := c.post("/api/cloudsearch/pc", map[string]any{
+		"s":      keyword,
+		"type":   100,
+		"limit":  limit,
+		"offset": offset,
+		"total":  true,
+	}, false)
+	if err != nil {
+		return nil, 0, err
+	}
+	result, _ := body["result"].(map[string]any)
+	if result == nil {
+		return nil, 0, nil
+	}
+	raw, _ := result["artists"].([]any)
+	total, _ := result["artistCount"].(float64)
+	artists := make([]artistItem, 0, len(raw))
+	for _, entry := range raw {
+		obj, _ := entry.(map[string]any)
+		if obj == nil {
+			continue
+		}
+		item := artistItem{}
+		item.ID = int64FromAny(obj["id"])
+		item.Name, _ = obj["name"].(string)
+		item.CoverURL, _ = obj["picUrl"].(string)
+		item.AlbumSize = int(int64FromAny(obj["albumSize"]))
+		artists = append(artists, item)
+	}
+	return artists, int(total), nil
+}
+
+// ArtistAlbums fetches an artist's album list sorted from newest to oldest
+func (c *neteaseClient) ArtistAlbums(id int64) ([]albumItem, error) {
+	body, err := c.post(fmt.Sprintf("/api/artist/albums/%d", id), map[string]any{
+		"limit":  200,
+		"offset": 0,
+		"total":  true,
+	}, false)
+	if err != nil {
+		return nil, err
+	}
+	raw, _ := body["hotAlbums"].([]any)
+	albums := make([]albumItem, 0, len(raw))
+	for _, entry := range raw {
+		obj, _ := entry.(map[string]any)
+		if obj == nil {
+			continue
+		}
+		item := albumItem{}
+		item.ID = int64FromAny(obj["id"])
+		item.Name, _ = obj["name"].(string)
+		item.TrackNum = int(int64FromAny(obj["size"]))
+		if artist, ok := obj["artist"].(map[string]any); ok {
+			item.Artist, _ = artist["name"].(string)
+		}
+		item.CoverURL, _ = obj["picUrl"].(string)
+		item.PublishTime = int64FromAny(obj["publishTime"])
+		albums = append(albums, item)
+	}
+	sort.Slice(albums, func(i, j int) bool { return albums[i].PublishTime > albums[j].PublishTime })
+	return albums, nil
 }
 
 // SongDetail fetches full metadata for one track
@@ -443,30 +528,37 @@ func parseSongEntry(entry any) *songItem {
 		item.Duration = int64FromAny(obj["duration"])
 	}
 	var names []string
+	var refs []artistRef
 	if ar, ok := obj["ar"].([]any); ok {
 		for _, a := range ar {
 			if m, ok := a.(map[string]any); ok {
-				if n, ok := m["name"].(string); ok {
-					names = append(names, n)
-				}
+				n, _ := m["name"].(string)
+				names = append(names, n)
+				refs = append(refs, artistRef{ID: int64FromAny(m["id"]), Name: n})
 			}
 		}
 	} else if ar, ok := obj["artists"].([]any); ok {
 		for _, a := range ar {
 			if m, ok := a.(map[string]any); ok {
-				if n, ok := m["name"].(string); ok {
-					names = append(names, n)
-				}
+				n, _ := m["name"].(string)
+				names = append(names, n)
+				refs = append(refs, artistRef{ID: int64FromAny(m["id"]), Name: n})
 			}
 		}
 	}
 	item.Artists = strings.Join(names, ",")
+	item.ArtistRefs = refs
+	if len(refs) > 0 {
+		item.ArtistID = refs[0].ID
+	}
 	if al, ok := obj["al"].(map[string]any); ok {
 		item.Album, _ = al["name"].(string)
 		item.CoverURL, _ = al["picUrl"].(string)
+		item.AlbumID = int64FromAny(al["id"])
 	} else if al, ok := obj["album"].(map[string]any); ok {
 		item.Album, _ = al["name"].(string)
 		item.CoverURL, _ = al["picUrl"].(string)
+		item.AlbumID = int64FromAny(al["id"])
 	}
 	return item
 }

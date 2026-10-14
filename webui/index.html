@@ -45,9 +45,27 @@ body {
   -webkit-font-smoothing: antialiased;
   min-height: 100vh;
 }
-::-webkit-scrollbar { width: 11px; height: 11px; background: var(--sb-track); }
-::-webkit-scrollbar-thumb { background: var(--sb-thumb); border: 1px solid var(--sb-thumb-hi); }
-::-webkit-scrollbar-thumb:hover { background: var(--sb-thumb-hi); }
+* { scrollbar-width: none; }
+::-webkit-scrollbar { width: 0; height: 0; display: none; }
+
+.sb {
+  position: absolute;
+  background: var(--sb-track);
+  z-index: 10;
+  user-select: none;
+}
+.sb.hidden { display: none; }
+.sb-v { top: 0; right: 0; bottom: 0; width: 11px; box-shadow: inset 1px 0 0 var(--line); }
+.sb-window { position: fixed; top: 52px; right: 0; bottom: 44px; }
+.sb-thumb {
+  position: absolute;
+  background: var(--sb-thumb);
+  border: 1px solid var(--sb-thumb-hi);
+}
+.sb-v .sb-thumb { left: 1px; right: 1px; min-height: 28px; }
+.sb-thumb:hover,
+.sb-thumb.dragging { background: var(--sb-thumb-hi); cursor: grab; }
+.sb-thumb.dragging { cursor: grabbing; }
 ::selection { background: var(--accent); color: #000; }
 :focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 
@@ -71,12 +89,7 @@ body {
   justify-content: center;
   gap: 22px;
 }
-.qr-frame {
-  background: #fff;
-  padding: 10px;
-  line-height: 0;
-  border: 1px solid var(--line-strong);
-}
+.qr-frame { background: #fff; padding: 6px; line-height: 0; }
 .qr-frame:has(img:not([src])) { display: none; }
 .qr-frame img { width: 220px; height: 220px; display: block; }
 
@@ -202,7 +215,7 @@ body {
 .hintbar {
   position: fixed;
   left: 0; right: 0; bottom: 0;
-  height: 36px;
+  height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -215,13 +228,91 @@ body {
   letter-spacing: 0.12em;
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
   z-index: 41;
+}
+#hintText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hint-actions {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  display: flex;
+}
+.hint-actions .cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 44px;
+  padding: 0 18px;
+  border: none;
+  border-left: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.12em;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.hint-actions .cell:hover { color: var(--text); background: var(--surface-1); }
+.hint-actions .cell.accent { color: var(--accent); }
+.hint-actions .cell { position: relative; }
+.hint-actions .cell[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  right: 12px;
+  bottom: calc(100% + 10px);
+  width: max-content;
+  max-width: 320px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: var(--fs-small);
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  line-height: 1.7;
+  white-space: normal;
+  text-align: left;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(4px);
+  transition: opacity 0.18s var(--ease), transform 0.18s var(--ease), visibility 0.18s;
+  z-index: 60;
+  pointer-events: none;
+}
+.hint-actions .cell[data-tip]:hover::after { opacity: 1; visibility: visible; transform: translateY(0); }
+
+#btnToQuality,
+#btnMaxQuality { min-width: 152px; }
+.img-ph {
+  width: 46px;
+  height: 46px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-2);
+  color: var(--text-4);
+}
+.lnk { cursor: pointer; }
+.lnk:hover { color: var(--accent); }
+.empty-msg {
+  padding: 28px 12px;
+  color: var(--text-4);
+  font-family: var(--mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.12em;
 }
 
 .toolbar {
   position: fixed;
-  left: 0; right: 0; bottom: 36px;
+  left: 0; right: 0; bottom: 0;
   display: flex;
   align-items: stretch;
   height: 56px;
@@ -243,6 +334,22 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.toolbar .cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 20px;
+  border: none;
+  border-left: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.12em;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.toolbar .cell:hover { color: var(--text); background: var(--surface-1); }
 button.act {
   padding: 0 32px;
   border: none;
@@ -335,23 +442,24 @@ button.act:disabled { opacity: 0.4; cursor: not-allowed; }
 
 <div id="viewSearch" class="view{{INIT_SEARCH}}">
   <div class="topbar">
+    <button class="cell" id="backBtn" style="display:none" onclick="goBack()">← 返回</button>
     <div class="search-form">
-      <input id="keyword" placeholder="歌名 / 专辑名 / 网易云链接 / ID" onkeydown="if(event.key==='Enter')doSearch()">
+      <input id="keyword" placeholder="歌名 / 歌手 / 专辑名 / 网易云链接 / ID" onkeydown="if(event.key==='Enter')doSearch()">
     </div>
     <button class="cell" onclick="doSearch()">搜索</button>
     <button class="cell" id="tabSong" onclick="switchTab('song')">单曲</button>
     <button class="cell" id="tabAlbum" onclick="switchTab('album')">专辑</button>
+    <button class="cell" id="tabArtist" onclick="switchTab('artist')">歌手</button>
     <button class="cell accent" id="authCell" onclick="showView('viewLogin')">未登录</button>
   </div>
   <div class="wrap">
-    <div class="step-head" id="searchStep" style="display:none">
-      <span class="label">搜索</span>
-    </div>
     <div class="rowlist" id="results"></div>
   </div>
   <div class="toolbar">
     <div class="info" id="selInfo">未选择</div>
-    <button class="act primary" id="btnToQuality" disabled onclick="goQuality()">选择音质</button>
+    <button class="cell" id="btnAll" onclick="toggleAll()">全选</button>
+    <button class="act" id="btnToQuality" disabled onclick="goQuality()">选择音质</button>
+    <button class="act primary" id="btnMaxQuality" disabled onclick="skipQuality()">默认最高音质</button>
   </div>
 </div>
 
@@ -376,7 +484,7 @@ button.act:disabled { opacity: 0.4; cursor: not-allowed; }
 
 <div id="viewFolder" class="view">
   <div class="topbar">
-    <button class="cell" onclick="showView('viewQuality')">← 返回</button>
+    <button class="cell" onclick="showView(folderReturn)">← 返回</button>
     <div class="search-form" style="pointer-events:none"><input value="下载位置" readonly></div>
   </div>
   <div class="wrap">
@@ -407,8 +515,7 @@ button.act:disabled { opacity: 0.4; cursor: not-allowed; }
   </div>
 </div>
 
-<div class="hintbar" id="hintbar"></div>
-
+<div class="hintbar" id="hintbar"><span id="hintText"></span><div class="hint-actions" id="hintActions"><button class="cell" onclick="startLogin()">刷新</button><button class="cell accent" onclick="skipLogin()" data-tip="跳过登录将以游客身份使用，可用音质受限，通常只有标准音质">跳过</button></div></div>
 <script>
 const LEVELS = [
   ['standard', '标准 128k'],
@@ -422,19 +529,15 @@ const LEVELS = [
   ['jymaster', '超清母带']
 ];
 const LEVEL_NAME = Object.fromEntries(LEVELS);
-const HINTS = {
-  viewLogin: '使用网易云音乐 APP 扫码登录 · r 刷新 · s 跳过',
-  viewSearch: '点击行选择 · 输入歌名 / 专辑名 / 链接 / ID 搜索',
-  viewQuality: '选择统一音质 · 各曲目自动取所选档位内最优',
-  viewFolder: '输入或粘贴保存文件夹路径 · Enter 确认',
-  viewProgress: '下载完成后自动返回搜索'
-};
-
 let status = {};
 let searchType = 'song';
 let results = [];
 let albumTracks = [];
 let selected = new Map();
+let navStack = [];
+let listKind = 'song';
+let searchMessage = '';
+let folderReturn = 'viewSearch';
 let quality = new Map();
 let songLevels = new Map();
 let loginTimer = null;
@@ -461,11 +564,12 @@ function fmtDur(ms) {
 function showView(id) {
   document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
   document.getElementById(id).classList.add('active');
-  document.getElementById('hintbar').textContent = HINTS[id] || '';
+  document.getElementById('hintbar').style.display = id === 'viewLogin' ? 'flex' : 'none';
   window.scrollTo(0, 0);
   if (id === 'viewSearch') {
     document.getElementById('keyword').focus();
   }
+  scheduleSbUpdate();
 }
 
 async function refreshStatus() {
@@ -501,9 +605,11 @@ async function startLogin() {
   }
 }
 
+const loginHint = '使用网易云音乐 APP 扫码登录 · r 刷新 · s 跳过';
+
 function setLoginState(state) {
   if (!document.getElementById('viewLogin').classList.contains('active')) return;
-  document.getElementById('hintbar').textContent = state ? (HINTS.viewLogin + ' · ' + state) : HINTS.viewLogin;
+  document.getElementById('hintText').textContent = state ? loginHint + ' · ' + state : loginHint;
 }
 
 document.addEventListener('keydown', (e) => {
@@ -551,12 +657,13 @@ function switchTab(type) {
   searchType = type;
   document.getElementById('tabSong').classList.toggle('accent', type === 'song');
   document.getElementById('tabAlbum').classList.toggle('accent', type === 'album');
+  document.getElementById('tabArtist').classList.toggle('accent', type === 'artist');
 }
 
 function parseInput(text) {
-  const m = text.match(/music\.163\.com\/.*?(?:song|album|playlist)\?id=(\d+)/);
+  const m = text.match(/music\.163\.com\/.*?(?:song|album|playlist|artist)\?id=(\d+)/);
   if (m) {
-    const kind = text.includes('album') ? 'album' : (text.includes('playlist') ? 'playlist' : 'song');
+    const kind = text.includes('artist') ? 'artist' : (text.includes('album') ? 'album' : (text.includes('playlist') ? 'playlist' : 'song'));
     return { kind, id: m[1] };
   }
   if (/^\d+$/.test(text.trim())) return { kind: searchType, id: text.trim() };
@@ -565,17 +672,23 @@ function parseInput(text) {
 
 async function doSearch() {
   const text = document.getElementById('keyword').value.trim();
-  if (!text) return;
   const direct = parseInput(text);
   document.getElementById('results').innerHTML = '';
-  document.getElementById('hintbar').textContent = HINTS.viewSearch;
+  searchMessage = '';
   results = [];
-  document.getElementById('searchStep').style.display = 'none';
+  navStack = [];
+  listKind = searchType;
   selected.clear();
   updateSel();
+  renderResults();
+  if (!text) return;
   try {
     if (direct && direct.kind === 'album') {
       await loadAlbum(direct.id);
+      return;
+    }
+    if (direct && direct.kind === 'artist') {
+      await loadArtistAlbums(direct.id);
       return;
     }
     const kw = direct ? direct.id : encodeURIComponent(text);
@@ -585,34 +698,117 @@ async function doSearch() {
         id: a.id, name: a.name, artists: a.artist, album: '', coverUrl: a.coverUrl,
         duration: 0, trackNum: a.trackNum, isAlbum: true
       }));
+      listKind = 'album';
+    } else if (data.type === 'artist') {
+      results = (data.artists || []).map((a) => ({
+        id: a.id, name: a.name, artists: '', album: '', coverUrl: a.coverUrl,
+        duration: 0, albumSize: a.albumSize, isArtist: true
+      }));
+      listKind = 'artist';
     } else {
       results = data.songs || [];
+      listKind = 'song';
     }
     if (!results.length) {
-      document.getElementById('hintbar').textContent = '没有结果 · 换个关键词，或直接粘贴歌曲链接';
+      searchMessage = '没有结果 · 换个关键词，或直接粘贴歌曲链接';
     }
     renderResults();
   } catch (e) {
-    document.getElementById('hintbar').textContent = '搜索失败 ' + e.message;
+    searchMessage = '搜索失败 ' + e.message;
+    renderResults();
   }
+}
+
+const musicIcon = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>';
+
+function imgFallback(el) {
+  const d = document.createElement('div');
+  d.className = 'img-ph';
+  d.innerHTML = musicIcon;
+  el.replaceWith(d);
+}
+
+function coverHTML(s) {
+  if (!s.coverUrl) return '<div class="img-ph">' + musicIcon + '</div>';
+  return `<img src="${esc(s.coverUrl)}" loading="lazy" alt="" onerror="imgFallback(this)">`;
+}
+
+function artistLinks(s) {
+  if (s.artistRefs && s.artistRefs.length) {
+    return s.artistRefs.map((a) => a.id
+      ? `<span class="lnk" onclick="event.stopPropagation();loadArtistAlbums(${a.id})">${esc(a.name)}</span>`
+      : esc(a.name)).join(',');
+  }
+  return s.artistId
+    ? `<span class="lnk" onclick="event.stopPropagation();loadArtistAlbums(${s.artistId})">${esc(s.artists)}</span>`
+    : esc(s.artists);
+}
+
+function songSub(s) {
+  const artist = artistLinks(s);
+  if (!s.album) return artist;
+  const album = s.albumId
+    ? `<span class="lnk" onclick="event.stopPropagation();loadAlbum(${s.albumId})">${esc(s.album)}</span>`
+    : esc(s.album);
+  return `${artist} · ${album}`;
 }
 
 function renderResults() {
   const box = document.getElementById('results');
-  document.getElementById('searchStep').style.display = results.length ? 'flex' : 'none';
-  box.innerHTML = results.map((s, i) => `
+  if (!results.length) {
+    box.innerHTML = searchMessage ? `<div class="empty-msg">${esc(searchMessage)}</div>` : '';
+    document.getElementById('backBtn').style.display = navStack.length ? '' : 'none';
+    scheduleSbUpdate();
+    return;
+  }
+  box.innerHTML = results.map((s, i) => {
+    if (s.isArtist) {
+      return `
     <div class="row ${selected.has(s.id) ? 'selected' : ''}" onclick="toggleResult(${i})">
-      <img src="${esc(s.coverUrl || '')}" loading="lazy" alt="">
+      ${coverHTML(s)}
       <div class="main">
         <div class="name">${esc(s.name)}</div>
-        <div class="sub">${esc(s.artists)}${s.isAlbum ? ' · ' + s.trackNum + ' 首' : ''}</div>
+        <div class="sub">歌手${s.albumSize ? ' · ' + s.albumSize + ' 张专辑' : ''}</div>
+      </div>
+      <div class="dur">ARTIST</div>
+    </div>`;
+    }
+    const sub = s.isAlbum
+      ? `${esc(s.artists)}${s.trackNum ? ' · ' + s.trackNum + ' 首' : ''}`
+      : (listKind === 'song' ? songSub(s) : artistLinks(s));
+    return `
+    <div class="row ${selected.has(s.id) ? 'selected' : ''}" onclick="toggleResult(${i})">
+      ${coverHTML(s)}
+      <div class="main">
+        <div class="name">${esc(s.name)}</div>
+        <div class="sub">${sub}</div>
       </div>
       <div class="dur">${s.isAlbum ? 'ALBUM' : fmtDur(s.duration)}</div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
+  document.getElementById('backBtn').style.display = navStack.length ? '' : 'none';
+  scheduleSbUpdate();
+}
+
+function pushNav() {
+  navStack.push({ results, listKind });
+}
+
+function goBack() {
+  const prev = navStack.pop();
+  if (!prev) return;
+  results = prev.results;
+  listKind = prev.listKind;
+  renderResults();
+  updateSel();
 }
 
 async function toggleResult(i) {
   const s = results[i];
+  if (s.isArtist) {
+    await loadArtistAlbums(s.id);
+    return;
+  }
   if (s.isAlbum) {
     await loadAlbum(s.id);
     return;
@@ -624,10 +820,34 @@ async function toggleResult(i) {
 
 async function loadAlbum(id) {
   const data = await fetchJSON('/api/album?id=' + id);
+  pushNav();
   albumTracks = data.songs || [];
   selected.clear();
-  albumTracks.forEach((s) => selected.set(s.id, s));
   results = albumTracks;
+  listKind = 'albumTracks';
+  renderResults();
+  updateSel();
+}
+
+function toggleAll() {
+  const songs = results.filter((s) => !s.isAlbum && !s.isArtist);
+  if (!songs.length) return;
+  const all = songs.every((s) => selected.has(s.id));
+  songs.forEach((s) => {
+    if (all) selected.delete(s.id); else selected.set(s.id, s);
+  });
+  renderResults();
+  updateSel();
+}
+
+async function loadArtistAlbums(id) {
+  const data = await fetchJSON('/api/artist-albums?id=' + id);
+  pushNav();
+  results = (data.albums || []).map((a) => ({
+    id: a.id, name: a.name, artists: a.artist, album: '', coverUrl: a.coverUrl,
+    duration: 0, trackNum: a.trackNum, isAlbum: true
+  }));
+  listKind = 'artistAlbums';
   renderResults();
   updateSel();
 }
@@ -637,10 +857,48 @@ function updateSel() {
   const total = results.length ? results.length + ' 条 · ' : '';
   document.getElementById('selInfo').textContent = n ? (total + '已选 ' + n + ' 首') : (total + '未选择');
   document.getElementById('btnToQuality').disabled = n === 0;
+  document.getElementById('btnMaxQuality').disabled = n === 0;
+  const songs = results.filter((s) => !s.isAlbum && !s.isArtist);
+  const all = songs.length > 0 && songs.every((s) => selected.has(s.id));
+  const btnAll = document.getElementById('btnAll');
+  btnAll.textContent = all ? '取消全选' : '全选';
+  btnAll.style.display = songs.length ? '' : 'none';
+}
+
+async function fetchQuality() {
+  const songs = Array.from(selected.values());
+  const data = await fetchJSON('/api/check', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ songs })
+  });
+  songLevels.clear();
+  const checkResults = data.results || [];
+  for (const r of checkResults) {
+    if (r.ok && r.levels) songLevels.set(r.id, r.levels);
+  }
+  return checkResults;
+}
+
+async function skipQuality() {
+  if (!selected.size) return;
+  folderReturn = 'viewSearch';
+  try {
+    await fetchQuality();
+    quality.clear();
+    songLevels.forEach((levels, id) => {
+      quality.set(id, resolveLevel(levels, 'hires'));
+    });
+    goFolder();
+  } catch (e) {
+    searchMessage = '音质检测失败 ' + e.message;
+    renderResults();
+  }
 }
 
 async function goQuality() {
   if (!selected.size) return;
+  folderReturn = 'viewQuality';
   showView('viewQuality');
   const list = document.getElementById('qualityList');
   const empty = document.getElementById('qualityEmpty');
@@ -649,25 +907,20 @@ async function goQuality() {
   list.innerHTML = '';
   quality.clear();
   try {
-    const songs = Array.from(selected.values());
-    const data = await fetchJSON('/api/check', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ songs })
-    });
+    const checkResults = await fetchQuality();
     empty.style.display = 'none';
-    const checkResults = data.results || [];
     const union = new Set();
     for (const r of checkResults) {
-      if (r.ok && r.levels) {
-        songLevels.set(r.id, r.levels);
-        r.levels.forEach((lv) => union.add(lv));
-      }
+      if (r.ok && r.levels) r.levels.forEach((lv) => union.add(lv));
     }
     const unionLevels = LEVELS.map((l) => l[0]).filter((lv) => union.has(lv));
     const unified = document.getElementById('qUnified');
     unified.innerHTML = unionLevels.map((lv) => `<option value="${lv}">${LEVEL_NAME[lv] || lv}</option>`).join('');
-    if (unionLevels.length) unified.value = unionLevels[unionLevels.length - 1];
+    if (unionLevels.length) {
+      const hiresIdx = LEVELS.findIndex((l) => l[0] === 'hires');
+      unified.value = unionLevels.filter((lv) => LEVELS.findIndex((l) => l[0] === lv) <= hiresIdx).pop() || unionLevels[unionLevels.length - 1];
+    }
+    const songs = Array.from(selected.values());
     list.innerHTML = songs.map((s) => {
       const r = checkResults.find((x) => x.id === s.id) || {};
       if (!r.ok) {
@@ -679,6 +932,7 @@ async function goQuality() {
         <div class="label" id="q${s.id}"></div></div>`;
     }).join('');
     applyUnified();
+    scheduleSbUpdate();
     document.getElementById('qInfo').textContent = selected.size + ' 首 · 统一音质自动取各曲目最优可用档';
   } catch (e) {
     empty.style.display = '';
@@ -686,16 +940,21 @@ async function goQuality() {
   }
 }
 
+function resolveLevel(levels, chosen) {
+  const chosenIdx = LEVELS.findIndex((l) => l[0] === chosen);
+  let resolved = levels[0];
+  for (const lv of levels) {
+    const idx = LEVELS.findIndex((l) => l[0] === lv);
+    if (idx >= 0 && idx <= chosenIdx) resolved = lv;
+  }
+  return resolved;
+}
+
 function applyUnified() {
   const chosen = document.getElementById('qUnified').value;
-  const chosenIdx = LEVELS.findIndex((l) => l[0] === chosen);
   quality.clear();
   songLevels.forEach((levels, id) => {
-    let resolved = levels[0];
-    for (const lv of levels) {
-      const idx = LEVELS.findIndex((l) => l[0] === lv);
-      if (idx >= 0 && idx <= chosenIdx) resolved = lv;
-    }
+    const resolved = resolveLevel(levels, chosen);
     quality.set(id, resolved);
     const cell = document.getElementById('q' + id);
     if (cell) cell.textContent = LEVEL_NAME[resolved] || resolved;
@@ -767,6 +1026,7 @@ async function refreshJob() {
       clearInterval(jobTimer);
       jobTimer = null;
     }
+    scheduleSbUpdate();
   } catch (e) {
   }
 }
@@ -775,8 +1035,15 @@ function backToSearch() {
   if (jobTimer) { clearInterval(jobTimer); jobTimer = null; }
   selected.clear();
   quality.clear();
+  if (navStack.length) {
+    const base = navStack[0];
+    results = base.results;
+    listKind = base.listKind;
+    navStack = [];
+  }
   updateSel();
   showView('viewSearch');
+  renderResults();
   refreshStatus();
 }
 
@@ -784,9 +1051,109 @@ refreshStatus().then(() => {
   if (status.loggedIn) {
     showView('viewSearch');
   } else {
+    showView('viewLogin');
     startLogin();
   }
 });
+
+const sbUpdates = [];
+let sbFrame = 0;
+
+function scheduleSbUpdate() {
+  if (sbFrame) return;
+  sbFrame = requestAnimationFrame(() => {
+    sbFrame = 0;
+    for (const update of sbUpdates) update();
+  });
+}
+
+function makeScrollbar(track, thumb, axis, measure, pin) {
+  let dragging = false;
+  let dragStart = 0;
+  let scrollStart = 0;
+
+  const update = () => {
+    const state = measure();
+    if (pin) pin();
+    if (state.total <= state.visible + 1) {
+      track.classList.add('hidden');
+      return;
+    }
+    track.classList.remove('hidden');
+    const trackLen = Math.round(axis === 'y' ? track.clientHeight : track.clientWidth);
+    if (trackLen <= 0) return;
+    const thumbLen = Math.max(28, Math.round(trackLen * (state.visible / state.total)));
+    const maxOffset = trackLen - thumbLen;
+    const range = Math.max(1, state.total - state.visible);
+    const ratio = Math.min(1, Math.max(0, state.current / range));
+    const edge = 2;
+    let offset = Math.round(maxOffset * ratio);
+    if (state.current <= 0 || offset <= edge) {
+      offset = 0;
+    } else if (state.current >= state.total - state.visible || offset >= maxOffset - edge) {
+      offset = maxOffset;
+    }
+    if (axis === 'y') {
+      thumb.style.height = thumbLen + 'px';
+      thumb.style.top = offset + 'px';
+    } else {
+      thumb.style.width = thumbLen + 'px';
+      thumb.style.left = offset + 'px';
+    }
+  };
+
+  thumb.addEventListener('pointerdown', (event) => {
+    dragging = true;
+    dragStart = axis === 'y' ? event.clientY : event.clientX;
+    scrollStart = measure().current;
+    thumb.classList.add('dragging');
+    thumb.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+  thumb.addEventListener('pointermove', (event) => {
+    if (!dragging) return;
+    const state = measure();
+    const trackLen = axis === 'y' ? track.clientHeight : track.clientWidth;
+    const thumbLen = axis === 'y' ? thumb.offsetHeight : thumb.offsetWidth;
+    const delta = (axis === 'y' ? event.clientY : event.clientX) - dragStart;
+    const range = Math.max(1, trackLen - thumbLen);
+    state.set(scrollStart + delta * ((state.total - state.visible) / range));
+  });
+  const stop = () => {
+    dragging = false;
+    thumb.classList.remove('dragging');
+  };
+  thumb.addEventListener('pointerup', stop);
+  thumb.addEventListener('pointercancel', stop);
+  sbUpdates.push(update);
+  return update;
+}
+
+function addTrack(container, extraClass, axis) {
+  const track = document.createElement('div');
+  track.className = `sb ${axis === 'y' ? 'sb-v' : 'sb-h'} ${extraClass}`.trim();
+  const thumb = document.createElement('div');
+  thumb.className = 'sb-thumb';
+  track.appendChild(thumb);
+  container.appendChild(track);
+  return { track, thumb };
+}
+
+const windowBar = addTrack(document.body, 'sb-window', 'y');
+makeScrollbar(windowBar.track, windowBar.thumb, 'y', () => ({
+  total: document.documentElement.scrollHeight,
+  visible: window.innerHeight,
+  current: window.scrollY,
+  set: (value) => window.scrollTo(0, value),
+}));
+document.addEventListener('scroll', scheduleSbUpdate, { capture: true, passive: true });
+window.addEventListener('load', scheduleSbUpdate);
+let sbResizeTimer = 0;
+window.addEventListener('resize', () => {
+  clearTimeout(sbResizeTimer);
+  sbResizeTimer = setTimeout(scheduleSbUpdate, 150);
+});
+scheduleSbUpdate();
 </script>
 </body>
 </html>

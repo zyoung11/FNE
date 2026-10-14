@@ -49,6 +49,7 @@ func (s *webServer) Start() (int, error) {
 	mux.HandleFunc("GET /api/qr.png", s.handleQRImage)
 	mux.HandleFunc("GET /api/search", s.handleSearch)
 	mux.HandleFunc("GET /api/album", s.handleAlbum)
+	mux.HandleFunc("GET /api/artist-albums", s.handleArtistAlbums)
 	mux.HandleFunc("POST /api/check", s.handleCheck)
 	mux.HandleFunc("POST /api/download", s.handleDownload)
 	mux.HandleFunc("GET /api/job", s.handleJob)
@@ -143,7 +144,13 @@ func (s *webServer) handleLoginCheck(w http.ResponseWriter, r *http.Request) {
 // handleQRImage renders the login QR code as a PNG image
 func (s *webServer) handleQRImage(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Query().Get("key")
-	png, err := qrcode.Encode(s.client.LoginQRURL(key), qrcode.Medium, 320)
+	qr, err := qrcode.New(s.client.LoginQRURL(key), qrcode.Medium)
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	qr.DisableBorder = true
+	png, err := qr.PNG(320)
 	if err != nil {
 		writeError(w, 500, err.Error())
 		return
@@ -160,6 +167,15 @@ func (s *webServer) handleSearch(w http.ResponseWriter, r *http.Request) {
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 	if limit <= 0 {
 		limit = 20
+	}
+	if kind == "artist" {
+		artists, total, err := s.client.SearchArtists(keyword, limit, offset)
+		if err != nil {
+			writeError(w, 500, err.Error())
+			return
+		}
+		writeJSON(w, map[string]any{"type": "artist", "total": total, "artists": artists})
+		return
 	}
 	if kind == "album" {
 		albums, total, err := s.client.SearchAlbums(keyword, limit, offset)
@@ -187,6 +203,17 @@ func (s *webServer) handleAlbum(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"album": album, "songs": songs})
+}
+
+// handleArtistAlbums returns an artist's album list from newest to oldest
+func (s *webServer) handleArtistAlbums(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+	albums, err := s.client.ArtistAlbums(id)
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"albums": albums})
 }
 
 // handleCheck reports the real quality levels each selected song offers to the current account
