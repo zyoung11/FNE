@@ -87,19 +87,20 @@ func main() {
 	leaveRawMode(state)
 }
 
-// runDownloadMode starts the browser download workflow and mirrors its state in the TUI
-func runDownloadMode() {
+// runDownloadMode starts the browser download workflow and returns true when the user pressed Ctrl+C
+func runDownloadMode() bool {
 	client := newNeteaseClient()
 	status := &downloadStatus{}
 	dl := newDownloader(client, status, globalConfig.NameFormat)
-	srv := newWebServer(client, dl, status, webUIHTML)
+	srv := newWebServer(client, dl, status, webUIIndex())
 	port, err := srv.Start()
 	if err != nil {
 		logError(fmt.Sprintf("启动 Web 服务失败 %v", err))
 		readLine(globalKeyReader, "按回车继续")
-		return
+		return false
 	}
 	openBrowser(fmt.Sprintf("http://127.0.0.1:%d", port))
-	runDownloadUI(globalKeyReader, status, port)
+	quit := runDownloadUI(globalKeyReader, status, port)
 	srv.Stop()
+	return quit
 }

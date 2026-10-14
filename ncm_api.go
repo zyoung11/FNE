@@ -28,6 +28,7 @@ const (
 type neteaseClient struct {
 	cookies  map[string]string
 	deviceID string
+	uid      int64
 	http     *http.Client
 }
 
@@ -48,6 +49,7 @@ type songItem struct {
 	ArtistID   int64       `json:"artistId"`
 	AlbumID    int64       `json:"albumId"`
 	ArtistRefs []artistRef `json:"artistRefs"`
+	Ok         *bool       `json:"ok,omitempty"`
 }
 
 // albumItem holds album metadata returned by search and detail endpoints
@@ -141,6 +143,15 @@ func (c *neteaseClient) LoggedIn() bool {
 	return c.cookies["MUSIC_U"] != ""
 }
 
+// playlistItem holds metadata for one playlist of the logged in user
+type playlistItem struct {
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	CoverURL   string `json:"coverUrl"`
+	TrackCount int    `json:"trackCount"`
+	PlayCount  int64  `json:"playCount"`
+}
+
 // Account validates the current cookies and returns the account nickname
 func (c *neteaseClient) Account() (string, error) {
 	body, err := c.post("/api/nuser/account/get", map[string]any{}, false)
@@ -151,8 +162,80 @@ func (c *neteaseClient) Account() (string, error) {
 	if profile == nil {
 		return "", fmt.Errorf("not logged in")
 	}
+	c.uid = int64FromAny(profile["userId"])
 	nickname, _ := profile["nickname"].(string)
 	return nickname, nil
+}
+
+// Logout clears the login cookies while keeping the anonymous device identity
+func (c *neteaseClient) Logout() error {
+	delete(c.cookies, "MUSIC_U")
+	delete(c.cookies, "MUSIC_A")
+	delete(c.cookies, "MUSIC_A_T")
+	delete(c.cookies, "MUSIC_R_T")
+	delete(c.cookies, "MUSIC_R_U")
+	delete(c.cookies, "MUSIC_SNS")
+	delete(c.cookies, "__csrf")
+	c.uid = 0
+	return c.Save()
+}
+
+// UserPlaylists returns the playlists of the logged in account
+func (c *neteaseClient) UserPlaylists() ([]playlistItem, error) {
+	if c.uid == 0 {
+		if _, err := c.Account(); err != nil {
+			return nil, err
+		}
+	}
+	body, err := c.post("/api/user/playlist", map[string]any{
+		"uid":    c.uid,
+		"limit":  100,
+		"offset": 0,
+	}, false)
+	if err != nil {
+		return nil, err
+	}
+	raw, _ := body["playlist"].([]any)
+	out := make([]playlistItem, 0, len(raw))
+	for _, entry := range raw {
+		obj, _ := entry.(map[string]any)
+		if obj == nil {
+			continue
+		}
+		item := playlistItem{}
+		item.ID = int64FromAny(obj["id"])
+		item.Name, _ = obj["name"].(string)
+		item.CoverURL, _ = obj["coverImgUrl"].(string)
+		item.TrackCount = int(int64FromAny(obj["trackCount"]))
+		item.PlayCount = int64FromAny(obj["playCount"])
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+// PlaylistDetail returns playlist metadata and its ordered track id list
+func (c *neteaseClient) PlaylistDetail(id int64) (*playlistItem, []int64, error) {
+	body, err := c.post("/api/v6/playlist/detail", map[string]any{"id": id, "n": 1000000}, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	obj, _ := body["playlist"].(map[string]any)
+	if obj == nil {
+		return nil, nil, fmt.Errorf("playlist %d not found", id)
+	}
+	item := &playlistItem{}
+	item.ID = int64FromAny(obj["id"])
+	item.Name, _ = obj["name"].(string)
+	item.CoverURL, _ = obj["coverImgUrl"].(string)
+	item.TrackCount = int(int64FromAny(obj["trackCount"]))
+	rawIDs, _ := obj["trackIds"].([]any)
+	ids := make([]int64, 0, len(rawIDs))
+	for _, entry := range rawIDs {
+		if m, ok := entry.(map[string]any); ok {
+			ids = append(ids, int64FromAny(m["id"]))
+		}
+	}
+	return item, ids, nil
 }
 
 // LoginQRKey requests a new QR login key from the server
@@ -254,6 +337,35 @@ type artistItem struct {
 	Name      string `json:"name"`
 	CoverURL  string `json:"coverUrl"`
 	AlbumSize int    `json:"albumSize"`
+}
+
+// SearchSuggest returns raw keyword and entity suggestions for the given input
+func (c *neteaseClient) SearchSuggest(keyword string) (map[string]any, error) {
+	body, err := c.post("/api/search/suggest/web", map[string]any{"s": keyword}, false)
+	if err != nil {
+		return nil, err
+	}
+	result, _ := body["result"].(map[string]any)
+	return result, nil
+}
+
+// SearchHot returns the current hot search keywords
+func (c *neteaseClient) SearchHot() ([]string, error) {
+	body, err := c.post("/api/search/hot", map[string]any{"type": "1111"}, false)
+	if err != nil {
+		return nil, err
+	}
+	result, _ := body["result"].(map[string]any)
+	raw, _ := result["hots"].([]any)
+	out := make([]string, 0, len(raw))
+	for _, entry := range raw {
+		if m, ok := entry.(map[string]any); ok {
+			if first, ok := m["first"].(string); ok && first != "" {
+				out = append(out, first)
+			}
+		}
+	}
+	return out, nil
 }
 
 // SearchArtists searches artists by keyword
@@ -372,8 +484,14 @@ func levelIndex(level string) int {
 
 // songQualityFrom derives the available quality levels from a detail entry and its privilege
 func songQualityFrom(song, privilege map[string]any) songQuality {
+	out := songQuality{}
+	st := int64FromAny(privilege["st"])
+	dl := int64FromAny(privilege["dl"])
 	dlLevel, _ := privilege["dlLevel"].(string)
 	maxLevel, _ := privilege["maxBrLevel"].(string)
+	if st < 0 || dl <= 0 || dlLevel == "" || dlLevel == "none" {
+		return out
+	}
 	capIdx := levelIndex(dlLevel)
 	if capIdx < 0 {
 		capIdx = levelIndex(maxLevel)
@@ -382,7 +500,6 @@ func songQualityFrom(song, privilege map[string]any) songQuality {
 	if maxIdx < 0 {
 		maxIdx = capIdx
 	}
-	out := songQuality{}
 	for i, lv := range qualityLevels {
 		if capIdx < 0 || i > capIdx {
 			break
@@ -408,36 +525,58 @@ func songQualityFrom(song, privilege map[string]any) songQuality {
 	return out
 }
 
-// SongQualities fetches the available quality levels for the given songs in one detail request
+// SongQualities fetches the available quality levels for the given songs
 func (c *neteaseClient) SongQualities(ids []int64) (map[int64]songQuality, error) {
-	parts := make([]string, 0, len(ids))
-	for _, id := range ids {
-		parts = append(parts, fmt.Sprintf(`{"id":%d}`, id))
-	}
-	body, err := c.post("/api/v3/song/detail", map[string]any{"c": "[" + strings.Join(parts, ",") + "]"}, false)
-	if err != nil {
-		return nil, err
-	}
-	privByID := make(map[int64]map[string]any)
-	rawPriv, _ := body["privileges"].([]any)
-	for _, entry := range rawPriv {
-		obj, _ := entry.(map[string]any)
-		if obj == nil {
-			continue
+	_, qualities, err := c.songsDetail(ids)
+	return qualities, err
+}
+
+// SongsMeta fetches metadata for the given song ids
+func (c *neteaseClient) SongsMeta(ids []int64) (map[int64]songItem, error) {
+	items, _, err := c.songsDetail(ids)
+	return items, err
+}
+
+// songsDetail fetches song metadata and quality info in batches of 200
+func (c *neteaseClient) songsDetail(ids []int64) (map[int64]songItem, map[int64]songQuality, error) {
+	items := make(map[int64]songItem, len(ids))
+	qualities := make(map[int64]songQuality, len(ids))
+	for start := 0; start < len(ids); start += 200 {
+		if start > 0 {
+			time.Sleep(400 * time.Millisecond)
 		}
-		privByID[int64FromAny(obj["id"])] = obj
-	}
-	out := make(map[int64]songQuality)
-	rawSongs, _ := body["songs"].([]any)
-	for _, entry := range rawSongs {
-		obj, _ := entry.(map[string]any)
-		if obj == nil {
-			continue
+		end := min(start+200, len(ids))
+		parts := make([]string, 0, end-start)
+		for _, id := range ids[start:end] {
+			parts = append(parts, fmt.Sprintf(`{"id":%d}`, id))
 		}
-		id := int64FromAny(obj["id"])
-		out[id] = songQualityFrom(obj, privByID[id])
+		body, err := c.post("/api/v3/song/detail", map[string]any{"c": "[" + strings.Join(parts, ",") + "]"}, false)
+		if err != nil {
+			return nil, nil, err
+		}
+		privByID := make(map[int64]map[string]any)
+		rawPriv, _ := body["privileges"].([]any)
+		for _, entry := range rawPriv {
+			obj, _ := entry.(map[string]any)
+			if obj == nil {
+				continue
+			}
+			privByID[int64FromAny(obj["id"])] = obj
+		}
+		rawSongs, _ := body["songs"].([]any)
+		for _, entry := range rawSongs {
+			obj, _ := entry.(map[string]any)
+			if obj == nil {
+				continue
+			}
+			id := int64FromAny(obj["id"])
+			if item := parseSongEntry(obj); item != nil {
+				items[id] = *item
+			}
+			qualities[id] = songQualityFrom(obj, privByID[id])
+		}
 	}
-	return out, nil
+	return items, qualities, nil
 }
 
 // AlbumDetail fetches album metadata and its track list
@@ -652,6 +791,9 @@ func (c *neteaseClient) send(endpoint string, form url.Values, headers map[strin
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	if code, ok := out["code"].(float64); ok && code != 200 && code != 801 && code != 802 && code != 803 && code != 800 {
+		if int(code) == 401 {
+			return nil, fmt.Errorf("接口被限流或登录已失效，请稍后再试")
+		}
 		return nil, fmt.Errorf("api error code %v", code)
 	}
 	return out, nil

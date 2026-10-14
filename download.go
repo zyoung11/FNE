@@ -16,6 +16,7 @@ import (
 type downloadItem struct {
 	Song   songItem `json:"song"`
 	Level  string   `json:"level"`
+	Folder string   `json:"folder"`
 	State  string   `json:"state"`
 	Detail string   `json:"detail"`
 }
@@ -99,15 +100,21 @@ func (d *downloader) Current() *downloadJob {
 
 // run processes all items of a job sequentially
 func (d *downloader) run(job *downloadJob) {
+	base := time.Now()
 	for i := range job.Items {
 		song := job.Items[i].Song
+		folder := job.Items[i].Folder
+		if folder == "" {
+			folder = job.Folder
+		}
 		d.pushStatus(job, i, "下载中", "")
-		name, err := downloadTrack(d.client, song, job.Items[i].Level, job.Folder, d.nameFormat)
+		name, err := downloadTrack(d.client, song, job.Items[i].Level, folder, d.nameFormat)
 		if err != nil {
 			job.setItem(i, "failed", err.Error())
 			d.pushStatus(job, i, "失败", err.Error())
 			continue
 		}
+		setFileOrderTime(filepath.Join(folder, name), base.Add(time.Duration(i)*time.Second))
 		job.setItem(i, "done", name)
 		d.pushStatus(job, i, "完成", name)
 	}
@@ -147,6 +154,9 @@ func buildOutputName(format string, song songItem) string {
 
 // downloadTrack downloads one track and embeds metadata and cover art
 func downloadTrack(client *neteaseClient, song songItem, level, folder, nameFormat string) (string, error) {
+	if err := os.MkdirAll(folder, 0755); err != nil {
+		return "", err
+	}
 	info, err := client.SongURL(song.ID, level)
 	if err != nil {
 		return "", err

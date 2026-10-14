@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	winfilepicker "github.com/zyoung11/GO-WinFilePicker"
 )
@@ -78,6 +79,29 @@ func isQMC2Format(ext string) bool {
 		return true
 	}
 	return false
+}
+
+// setFileOrderTime assigns the creation time used to keep playlist order in Explorer
+func setFileOrderTime(path string, t time.Time) {
+	pathPtr, err := syscall.UTF16PtrFromString(path)
+	if err != nil {
+		return
+	}
+	h, err := syscall.CreateFile(
+		pathPtr,
+		syscall.FILE_WRITE_ATTRIBUTES,
+		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE,
+		nil,
+		syscall.OPEN_EXISTING,
+		syscall.FILE_FLAG_BACKUP_SEMANTICS,
+		0,
+	)
+	if err != nil {
+		return
+	}
+	defer syscall.CloseHandle(h)
+	c := syscall.NsecToFiletime(t.UnixNano())
+	syscall.SetFileTime(h, &c, nil, nil)
 }
 
 // downloadQuitHint returns the bottom hint text for leaving the download mode

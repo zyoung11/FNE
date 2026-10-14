@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 )
 
 // configDir returns the directory holding config and cookie files under the user config home
@@ -41,6 +42,11 @@ func runtimePlatform() string {
 func runApp() {
 	runDownloadMode()
 	clearScreen()
+}
+
+// setFileOrderTime assigns the modification time used to keep playlist order in file managers
+func setFileOrderTime(path string, t time.Time) {
+	_ = os.Chtimes(path, t, t)
 }
 
 // downloadQuitHint returns the bottom hint text for leaving the download mode

@@ -20,6 +20,7 @@ const (
 	KeyEnter
 	KeyBackspace
 	KeyEsc
+	KeyCtrlC
 )
 
 const (
@@ -61,6 +62,8 @@ func newKeyReader() *keyReader {
 				switch r {
 				case '\r', '\n':
 					k.keys <- KeyEnter
+				case 3:
+					k.keys <- KeyCtrlC
 				case 8, 127:
 					k.keys <- KeyBackspace
 				default:
@@ -245,8 +248,8 @@ func (s *downloadStatus) snapshot() ([]string, int, int, string) {
 	return s.lines, s.done, s.total, s.lastErr
 }
 
-// runDownloadUI renders the download status page until the user quits back to the menu
-func runDownloadUI(kr *keyReader, status *downloadStatus, port int) {
+// runDownloadUI renders the download status page and returns true when the user pressed Ctrl+C
+func runDownloadUI(kr *keyReader, status *downloadStatus, port int) bool {
 	lastFrame := ""
 	for {
 		w, h := termSize()
@@ -283,8 +286,11 @@ func runDownloadUI(kr *keyReader, status *downloadStatus, port int) {
 		}
 		select {
 		case key := <-kr.keys:
+			if key == KeyCtrlC {
+				return true
+			}
 			if key == 'q' || key == 'Q' || key == KeyEsc {
-				return
+				return false
 			}
 		case <-time.After(300 * time.Millisecond):
 		}
