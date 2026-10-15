@@ -1,6 +1,6 @@
 module FNE
 
-go 1.25.4
+go 1.27.2
 
 require (
 	github.com/bogem/id3v2 v1.2.0
