@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -15,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bogem/id3v2"
+	"github.com/go-flac/go-flac"
 	"github.com/schollz/progressbar/v3"
 )
 
@@ -159,6 +162,17 @@ func showMainMenu(kr *keyReader) int {
 
 // runApp shows the mode menu and dispatches to the chosen workflow
 func runApp() {
+	switch strings.ToLower(strings.TrimSpace(globalConfig.DefaultMode)) {
+	case "download":
+		runDownloadMode()
+		return
+	case "convert":
+		runLocalConvert()
+		return
+	case "playlist":
+		runPlaylistConvert()
+		return
+	}
 	for {
 		choice := showMainMenu(globalKeyReader)
 		clearScreen()
@@ -410,6 +424,93 @@ func readNcmFileMeta(path string) (ncmFileMetaInfo, error) {
 	return ncmFileMetaInfo{Title: meta.MusicName, Artist: parseArtist(meta.Artist)}, nil
 }
 
+// isPlainAudioFormat reports whether the extension is a playable unencrypted audio format
+func isPlainAudioFormat(ext string) bool {
+	switch ext {
+	case ".flac", ".mp3", ".wav", ".ogg", ".m4a":
+		return true
+	}
+	return false
+}
+
+// readPlainFileMeta extracts title and artist from the embedded tags of a plain audio file
+func readPlainFileMeta(path string) (ncmFileMetaInfo, error) {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".mp3":
+		return readMP3TagMeta(path)
+	case ".flac":
+		return readFLACTagMeta(path)
+	}
+	return ncmFileMetaInfo{}, fmt.Errorf("plain audio tags unsupported")
+}
+
+// readMP3TagMeta reads the ID3 title and artist frames of an MP3 file
+func readMP3TagMeta(path string) (ncmFileMetaInfo, error) {
+	tag, err := id3v2.Open(path, id3v2.Options{Parse: true})
+	if err != nil {
+		return ncmFileMetaInfo{}, err
+	}
+	defer tag.Close()
+	meta := ncmFileMetaInfo{
+		Title:  tag.GetTextFrame("TIT2").Text,
+		Artist: tag.GetTextFrame("TPE1").Text,
+	}
+	if meta.Title == "" {
+		return ncmFileMetaInfo{}, fmt.Errorf("no title tag")
+	}
+	return meta, nil
+}
+
+// readFLACTagMeta reads the Vorbis Comment title and artist of a FLAC file
+func readFLACTagMeta(path string) (ncmFileMetaInfo, error) {
+	f, err := flac.ParseFile(path)
+	if err != nil {
+		return ncmFileMetaInfo{}, err
+	}
+	for _, block := range f.Meta {
+		if block.Type != flac.VorbisComment {
+			continue
+		}
+		tags := parseVorbisComment(block.Data)
+		meta := ncmFileMetaInfo{Title: tags["TITLE"], Artist: tags["ARTIST"]}
+		if meta.Title != "" {
+			return meta, nil
+		}
+	}
+	return ncmFileMetaInfo{}, fmt.Errorf("no title tag")
+}
+
+// parseVorbisComment decodes a Vorbis Comment block body into uppercase keyed tags
+func parseVorbisComment(data []byte) map[string]string {
+	out := make(map[string]string)
+	r := bytes.NewReader(data)
+	var vendorLen uint32
+	if err := binary.Read(r, binary.LittleEndian, &vendorLen); err != nil {
+		return out
+	}
+	if _, err := r.Seek(int64(vendorLen), io.SeekCurrent); err != nil {
+		return out
+	}
+	var count uint32
+	if err := binary.Read(r, binary.LittleEndian, &count); err != nil {
+		return out
+	}
+	for i := uint32(0); i < count; i++ {
+		var n uint32
+		if err := binary.Read(r, binary.LittleEndian, &n); err != nil {
+			break
+		}
+		buf := make([]byte, n)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			break
+		}
+		if k, v, ok := strings.Cut(string(buf), "="); ok {
+			out[strings.ToUpper(k)] = v
+		}
+	}
+	return out
+}
+
 // normalizeMatch normalizes a title or artist string for fuzzy comparison
 func normalizeMatch(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
@@ -444,7 +545,7 @@ func artistOverlap(a, b string) bool {
 	return false
 }
 
-// matchPlaylistFiles maps ordered playlist tracks to local encrypted files by metadata then filename
+// matchPlaylistFiles maps ordered playlist tracks to local files by metadata then filename
 func matchPlaylistFiles(tracks []songItem, ncmMetas map[string]ncmFileMetaInfo, plainFiles []string) []string {
 	used := make(map[string]bool)
 	out := make([]string, len(tracks))
@@ -476,10 +577,6 @@ func matchPlaylistFiles(tracks []songItem, ncmMetas map[string]ncmFileMetaInfo, 
 			continue
 		}
 		nameNorm := normalizeMatch(track.Name)
-		artistVariants := []string{normalizeMatch(track.Artists)}
-		for _, n := range artistNames(track.Artists) {
-			artistVariants = append(artistVariants, n)
-		}
 		for _, path := range pool {
 			if used[path] {
 				continue
@@ -490,17 +587,9 @@ func matchPlaylistFiles(tracks []songItem, ncmMetas map[string]ncmFileMetaInfo, 
 				continue
 			}
 			left, right := normalizeMatch(parts[0]), normalizeMatch(parts[1])
-			for _, av := range artistVariants {
-				if av == "" {
-					continue
-				}
-				if (left == av && right == nameNorm) || (left == nameNorm && right == av) {
-					out[i] = path
-					used[path] = true
-					break
-				}
-			}
-			if out[i] != "" {
+			if (right == nameNorm && artistOverlap(left, track.Artists)) || (left == nameNorm && artistOverlap(right, track.Artists)) {
+				out[i] = path
+				used[path] = true
 				break
 			}
 		}
@@ -578,9 +667,10 @@ func (r *playlistConvertRunner) Current() *downloadJob {
 	return job.snapshot()
 }
 
-// run converts all matched files in parallel and then stamps the playlist order
+// run converts missing matched files in parallel and stamps the playlist order
 func (r *playlistConvertRunner) run(job *downloadJob, paths []string) {
-	base := time.Now()
+	base := time.Date(2000, 1, 1, 0, 0, 0, 0, time.Local)
+	existing := scanOutputAudio(job.Folder)
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 8)
 	for i := range job.Items {
@@ -588,9 +678,16 @@ func (r *playlistConvertRunner) run(job *downloadJob, paths []string) {
 			job.setItem(i, "skipped", "本地无匹配文件")
 			continue
 		}
+		stamp := base.Add(time.Duration(i) * time.Second)
+		if outPath, ok := existing[strings.TrimSuffix(filepath.Base(paths[i]), filepath.Ext(paths[i]))]; ok {
+			setFileOrderTime(outPath, stamp)
+			job.setItem(i, "done", "已转换过")
+			r.pushStatus(job, i, "跳过", "已转换过")
+			continue
+		}
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(i int) {
+		go func(i int, stamp time.Time) {
 			defer wg.Done()
 			defer func() { <-sem }()
 			ext := strings.ToLower(filepath.Ext(paths[i]))
@@ -598,6 +695,8 @@ func (r *playlistConvertRunner) run(job *downloadJob, paths []string) {
 			var err error
 			if isQMC2Format(ext) {
 				format, err = convertQMC2File(paths[i], job.Folder)
+			} else if isPlainAudioFormat(ext) {
+				format, err = copyPlainAudio(paths[i], job.Folder)
 			} else {
 				format, err = convertNcmFile(paths[i], job.Folder)
 			}
@@ -607,15 +706,39 @@ func (r *playlistConvertRunner) run(job *downloadJob, paths []string) {
 				return
 			}
 			outName := strings.TrimSuffix(filepath.Base(paths[i]), filepath.Ext(paths[i])) + "." + format
-			setFileOrderTime(filepath.Join(job.Folder, outName), base.Add(time.Duration(i)*time.Second))
+			setFileOrderTime(filepath.Join(job.Folder, outName), stamp)
 			job.setItem(i, "done", outName)
 			r.pushStatus(job, i, "完成", outName)
-		}(i)
+		}(i, stamp)
 	}
 	wg.Wait()
 	job.mu.Lock()
 	job.State = "finished"
 	job.mu.Unlock()
+}
+
+// copyPlainAudio copies a playable plain audio file into the output folder and returns its format
+func copyPlainAudio(path, folder string) (string, error) {
+	ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(path)), ".")
+	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	dst := filepath.Join(folder, name+"."+ext)
+	src, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer src.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(out, src); err != nil {
+		out.Close()
+		return "", err
+	}
+	if err := out.Close(); err != nil {
+		return "", err
+	}
+	return ext, nil
 }
 
 // pushStatus mirrors the conversion progress into the TUI status view
@@ -639,7 +762,7 @@ func (r *playlistConvertRunner) pushStatus(job *downloadJob, index int, state, d
 	r.status.update(lines, snap.Done, len(snap.Items), "")
 }
 
-// scanPlaylistSources collects NCM files with parsed metadata and other encrypted files
+// scanPlaylistSources collects encrypted files and playable plain audio files with any readable metadata
 func scanPlaylistSources(dir string, recursive bool) (map[string]ncmFileMetaInfo, []string) {
 	ncmMetas := make(map[string]ncmFileMetaInfo)
 	var plainFiles []string
@@ -670,9 +793,32 @@ func scanPlaylistSources(dir string, recursive bool) (map[string]ncmFileMetaInfo
 			}
 		} else if isQMC2Format(ext) {
 			plainFiles = append(plainFiles, path)
+		} else if isPlainAudioFormat(ext) {
+			if meta, err := readPlainFileMeta(path); err == nil {
+				ncmMetas[path] = meta
+			}
+			plainFiles = append(plainFiles, path)
 		}
 	}
 	return ncmMetas, plainFiles
+}
+
+// scanOutputAudio maps base names of playable files already in the output folder to their paths
+func scanOutputAudio(dir string) map[string]string {
+	out := make(map[string]string)
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(e.Name()))
+		if !isPlainAudioFormat(ext) {
+			continue
+		}
+		name := strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
+		out[name] = filepath.Join(dir, e.Name())
+	}
+	return out
 }
 
 // showConvertMenu renders the local conversion submenu and returns the chosen mode

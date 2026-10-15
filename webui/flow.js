@@ -20,6 +20,8 @@ async function fetchQuality() {
 async function skipQuality() {
   if (!selected.size) return;
   folderReturn = 'viewSearch';
+  const btn = document.getElementById('btnMaxQuality');
+  setBusy(btn, true);
   try {
     await fetchQuality();
     quality.clear();
@@ -31,17 +33,20 @@ async function skipQuality() {
     searchMessage = '音质检测失败 ' + e.message;
     renderResults();
   }
+  setBusy(btn, false);
 }
 
 async function goQuality() {
   if (!selected.size) return;
+  const entries = ['btnToQuality', 'btnMaxQuality', 'plMainBtn', 'cartActionBtn'].map((id) => document.getElementById(id));
+  entries.forEach((b) => setBusy(b, true));
   qualityReturn = document.querySelector('.view.active').id;
   folderReturn = 'viewQuality';
   showView('viewQuality');
   const list = document.getElementById('qualityList');
   const empty = document.getElementById('qualityEmpty');
   empty.style.display = '';
-  empty.textContent = '检测可用音质…';
+  empty.innerHTML = loadingHTML('检测可用音质');
   list.innerHTML = '';
   quality.clear();
   try {
@@ -76,6 +81,7 @@ async function goQuality() {
     empty.style.display = '';
     empty.textContent = '音质检测失败 ' + e.message;
   }
+  entries.forEach((b) => setBusy(b, false));
 }
 
 function resolveLevel(levels, chosen) {

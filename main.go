@@ -16,6 +16,7 @@ type appConfig struct {
 	APIDelayMin   int    `json:"apiDelayMin"`
 	APIDelayMax   int    `json:"apiDelayMax"`
 	NameFormat    string `json:"nameFormat"`
+	DefaultMode   string `json:"defaultMode"`
 }
 
 // loadConfig loads configuration from config.json in the platform config directory

@@ -1,5 +1,10 @@
 let playlistCtx = null;
 let plTracks = [];
+
+function setConvertBusy(busy) {
+  setBusy(document.getElementById('plMainBtn'), busy);
+  setBusy(document.getElementById('cartActionBtn'), busy);
+}
 function openCart() {
   pushNav();
   renderCart();
@@ -48,7 +53,7 @@ async function loadPlaylists() {
   const list = document.getElementById('playlistList');
   const empty = document.getElementById('playlistEmpty');
   empty.style.display = '';
-  empty.textContent = '加载中…';
+  empty.innerHTML = loadingHTML('加载中');
   list.innerHTML = '';
   try {
     const data = await fetchJSON('/api/playlists');
@@ -83,7 +88,7 @@ async function loadPlaylistDetail(id) {
   const list = document.getElementById('plTracks');
   const empty = document.getElementById('plEmpty');
   empty.style.display = '';
-  empty.textContent = '加载中…';
+  empty.innerHTML = loadingHTML('加载中');
   list.innerHTML = '';
   try {
     let data = plDetailCache.get(id);
@@ -211,6 +216,8 @@ function toggleAllPlTracks() {
 
 function updatePlSel() {
   document.getElementById('plSelInfo').textContent = (selected.size ? ('已选 ' + selected.size + ' / ' + plTracks.length + ' 首') : ('未选择 · 共 ' + plTracks.length + ' 首')) + ' ›';
+  const all = plTracks.length > 0 && selected.size === plTracks.length;
+  document.getElementById('plBtnAll').textContent = all ? '取消全选' : '全选';
 }
 
 function playlistMainAction() {
@@ -225,6 +232,7 @@ function playlistMainAction() {
 async function startConvert() {
   const ids = plTracks.filter((s) => selected.has(s.id)).map((s) => s.id);
   if (!ids.length) return;
+  setConvertBusy(true);
   try {
     await fetchJSON('/api/convert/start', {
       method: 'POST',
@@ -238,4 +246,5 @@ async function startConvert() {
   } catch (e) {
     document.getElementById('plSelInfo').textContent = '启动失败 ' + e.message;
   }
+  setConvertBusy(false);
 }

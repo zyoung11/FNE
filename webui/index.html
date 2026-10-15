@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>下载</title>
+<title>FNE</title>
 <link rel="stylesheet" href="app.css">
 </head>
 <body data-mode="{{MODE}}">
@@ -59,7 +59,6 @@
   <div class="topbar">
     <button class="cell" onclick="loadPlaylists()">← 返回</button>
     <div class="search-form" style="pointer-events:none"><input id="plTitle" value="" readonly></div>
-    <button class="cell" onclick="toggleAllPlTracks()">全选</button>
   </div>
   <div class="wrap">
     <div class="rowlist" id="plTracks"></div>
@@ -67,6 +66,7 @@
   </div>
   <div class="toolbar">
     <div class="info clickable" id="plSelInfo" onclick="openCart()">未选择</div>
+    <button class="cell" id="plBtnAll" onclick="toggleAllPlTracks()">全选</button>
     <button class="act primary" id="plMainBtn" onclick="playlistMainAction()">选择音质</button>
   </div>
 </div>
@@ -92,7 +92,6 @@
     <div class="search-form" style="pointer-events:none"><input value="选择音质" readonly></div>
   </div>
   <div class="wrap">
-    <div class="step-head"><span class="label">音质</span></div>
     <div class="q-row"><div class="main"><div class="name">统一音质</div>
       <div class="sub">各曲目自动取所选档位内的最优可用档</div></div>
       <select id="qUnified" onchange="applyUnified()"></select></div>
@@ -111,7 +110,6 @@
     <div class="search-form" style="pointer-events:none"><input value="下载位置" readonly></div>
   </div>
   <div class="wrap">
-    <div class="step-head"><span class="label">位置</span></div>
     <div class="path-form">
       <input id="folderInput" placeholder="输入或粘贴保存文件夹路径">
       <button id="browseBtn" onclick="pickFolder()" style="display:none">浏览</button>
@@ -128,13 +126,12 @@
     <div class="search-form" style="pointer-events:none"><input value="下载" readonly></div>
   </div>
   <div class="wrap">
-    <div class="step-head"><span class="label">下载</span></div>
     <div class="bar"><i id="jobBar" style="width:0%"></i></div>
     <div class="rowlist" id="jobList"></div>
   </div>
   <div class="toolbar">
     <div class="info" id="jobInfo"></div>
-    <button class="act" id="backBtn" onclick="backToSearch()">返回搜索</button>
+    <button class="act" id="jobBackBtn" onclick="backToSearch()">返回搜索</button>
   </div>
 </div>
 

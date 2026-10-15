@@ -228,11 +228,30 @@ function updateSel() {
   btnAll.style.display = songs.length ? '' : 'none';
 }
 
+function loadingHTML(text) {
+  return '<div class="loading"><span class="spinner"></span>' + text + '</div>';
+}
+
+function setBusy(btn, busy) {
+  if (!btn) return;
+  if (busy) {
+    btn.dataset.label = btn.textContent;
+    btn.dataset.wasDisabled = btn.disabled ? '1' : '';
+    btn.disabled = true;
+    btn.classList.add('busy');
+    btn.innerHTML = '<span class="spinner"></span>' + btn.dataset.label;
+    return;
+  }
+  btn.classList.remove('busy');
+  if (btn.dataset.label) btn.textContent = btn.dataset.label;
+  btn.disabled = btn.dataset.wasDisabled === '1';
+}
+
 window.addEventListener('load', () => {
   refreshStatus().then(() => {
     if (APP_MODE === 'convert') {
       document.getElementById('plBackBtn').style.display = 'none';
-      document.getElementById('backBtn').textContent = '返回歌单';
+      document.getElementById('jobBackBtn').textContent = '返回歌单';
       document.querySelectorAll('#hintActions .cell').forEach((btn) => {
         if (btn.textContent.trim() === '跳过') btn.style.display = 'none';
       });

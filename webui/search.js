@@ -180,6 +180,7 @@ async function doSearch() {
   updateSel();
   renderResults();
   if (!text) return;
+  document.getElementById('results').innerHTML = loadingHTML('搜索中');
   try {
     if (direct && direct.kind === 'album') {
       await loadAlbum(direct.id);

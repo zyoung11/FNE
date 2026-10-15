@@ -38,7 +38,9 @@ Windows / Linux 预编译版本见 [Releases](https://github.com/zyoung11/FNE/re
 > [!NOTE]
 > 需要 VIP 会员，并在官方客户端中把歌曲下载到本地。网易云的加密文件是 `.ncm`，QQ 音乐是 `.mflac` / `.mgg` 等格式。转换 QMC2 文件时 **QQ 音乐客户端必须运行并处于登录状态**
 
-1. 启动 FNE 选择「本地转换」
+### 默认转换
+
+1. 启动 FNE 选择「本地转换」→「默认转换」
 2. 选择加密文件所在的文件夹
 3. 选择输出文件夹
 4. 等待转换完成
@@ -51,6 +53,13 @@ Windows / Linux 预编译版本见 [Releases](https://github.com/zyoung11/FNE/re
 
 已转换过的歌曲自动跳过，文件创建时间保留
 
+### 歌单转换
+
+1. 启动 FNE 选择「本地转换」→「歌单转换」
+2. 在网页里选择歌单，勾选歌曲后开始转换
+
+只转换本地已有且能与歌单匹配的歌曲，输出到以歌单命名的文件夹并保持歌单顺序。已转换过的自动跳过只补转缺失的，已经是明文的 FLAC / MP3 / OGG 等直接复制
+
 ## 配置文件
 
 Windows 在程序目录下读 `./config.json`，Linux 在 `~/.config/FNE/` 下读
@@ -61,6 +70,7 @@ Windows 在程序目录下读 `./config.json`，Linux 在 `~/.config/FNE/` 下�
   "outputFolder": "D:/Music/Converted",
   "recursive": false,
   "nameFormat": "artist - title",
+  "defaultMode": "",
   "apiConcurrent": 3,
   "apiDelayMin": 200,
   "apiDelayMax": 800
@@ -73,6 +83,7 @@ Windows 在程序目录下读 `./config.json`，Linux 在 `~/.config/FNE/` 下�
 | `outputFolder` | string | - | 默认保存位置，下载模式预填 |
 | `recursive` | bool | false | 本地转换是否递归扫描子文件夹 |
 | `nameFormat` | string | `artist - title` | 下载文件命名，可选 `title - artist` |
+| `defaultMode` | string | - | Windows 启动直进的模式，`download` / `convert` / `playlist`，缺省显示菜单 |
 | `apiConcurrent` | int | 3 | QMC2 解密的 API 并发限制 |
 | `apiDelayMin` | int | 200 | QMC2 解密的 API 最小延迟(ms) |
 | `apiDelayMax` | int | 800 | QMC2 解密的 API 最大延迟(ms) |
