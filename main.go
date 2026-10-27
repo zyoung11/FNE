@@ -2,10 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 )
+
+// errPickCancelled reports that the user closed the folder picker without choosing a folder
+var errPickCancelled = errors.New("folder picker cancelled")
 
 // appConfig holds the application configuration
 type appConfig struct {
@@ -17,6 +21,15 @@ type appConfig struct {
 	APIDelayMax   int    `json:"apiDelayMax"`
 	NameFormat    string `json:"nameFormat"`
 	DefaultMode   string `json:"defaultMode"`
+	RememberPath  *bool  `json:"rememberPath"`
+}
+
+// shouldRememberPath reports whether the app records the last used save folder
+func (c *appConfig) shouldRememberPath() bool {
+	if c == nil || c.RememberPath == nil {
+		return true
+	}
+	return *c.RememberPath
 }
 
 // loadConfig loads configuration from config.json in the platform config directory
@@ -46,8 +59,13 @@ var globalKeyReader *keyReader
 // globalConfig holds the active application configuration
 var globalConfig *appConfig
 
-// defaultDownloadFolder returns the configured default save folder for the download mode
+// defaultDownloadFolder returns the default save folder for the download mode
 func defaultDownloadFolder() string {
+	if globalConfig.shouldRememberPath() {
+		if folder := loadLastFolder(); folder != "" {
+			return folder
+		}
+	}
 	if globalConfig == nil {
 		return ""
 	}

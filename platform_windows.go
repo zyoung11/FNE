@@ -3,13 +3,14 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"syscall"
 	"time"
 
-	winfilepicker "github.com/zyoung11/GO-WinFilePicker"
+	winfilepicker "FNE/winfilepicker"
 )
 
 // configDir returns the directory holding config and cookie files, the exe directory for the portable build
@@ -28,7 +29,21 @@ func selectFolder(prompt string) (string, error) {
 
 // pickDownloadFolder opens a native folder dialog for the web download mode
 func pickDownloadFolder() (string, error) {
-	return winfilepicker.SelectFolder("选择保存文件夹路径")
+	folder, err := winfilepicker.SelectFolder("选择保存文件夹路径")
+	if errors.Is(err, winfilepicker.ErrCancelled) {
+		return "", errPickCancelled
+	}
+	return folder, err
+}
+
+// loadLastFolder is unused on Windows because the save folder is not recorded
+func loadLastFolder() string {
+	return ""
+}
+
+// saveLastFolder is unused on Windows because the save folder is not recorded
+func saveLastFolder(_ string) error {
+	return nil
 }
 
 // runtimePlatform returns the platform identifier reported to the web UI

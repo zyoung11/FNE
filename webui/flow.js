@@ -121,6 +121,10 @@ async function pickFolder() {
   info.textContent = '请在弹出的窗口中选择文件夹…';
   try {
     const data = await fetchJSON('/api/pick-folder', { method: 'POST' });
+    if (data.cancelled) {
+      info.textContent = '已取消';
+      return;
+    }
     document.getElementById('folderInput').value = data.folder;
     info.textContent = data.folder;
   } catch (e) {

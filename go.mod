@@ -9,7 +9,6 @@ require (
 	github.com/mattn/go-runewidth v0.0.16
 	github.com/schollz/progressbar/v3 v3.18.0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
-	github.com/zyoung11/GO-WinFilePicker v1.0.0
 	golang.org/x/term v0.28.0
 )
 

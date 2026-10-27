@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net"
@@ -420,6 +421,9 @@ func (s *webServer) handleDownload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	job := s.dl.Start(req.Items, req.Folder)
+	if globalConfig.shouldRememberPath() {
+		_ = saveLastFolder(req.Folder)
+	}
 	writeJSON(w, map[string]any{"jobId": job.ID})
 }
 
@@ -443,6 +447,10 @@ func (s *webServer) handleJob(w http.ResponseWriter, r *http.Request) {
 func (s *webServer) handlePickFolder(w http.ResponseWriter, r *http.Request) {
 	folder, err := pickDownloadFolder()
 	if err != nil {
+		if errors.Is(err, errPickCancelled) {
+			writeJSON(w, map[string]any{"cancelled": true})
+			return
+		}
 		writeError(w, 500, err.Error())
 		return
 	}
